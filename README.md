@@ -1,5 +1,3 @@
-# arcana-ai
-Taro recreational system
 # Arcana AI Tarot
 
 AI-сервис гадания на Таро с голосовым интерфейсом и Telegram Mini App.

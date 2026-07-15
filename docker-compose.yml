@@ -1,0 +1,84 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: arcana
+      POSTGRES_PASSWORD: arcana_password
+      POSTGRES_DB: arcana_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  qdrant:
+    image: qdrant/qdrant:v1.7.0
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+
+  embeddings-svc:
+    build:
+      context: ./scripts/embeddings
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - FALLBACK_AITUNNEL_API_KEY=${AITUNNEL_API_KEY}
+      - FALLBACK_AITUNNEL_BASE_URL=${AITUNNEL_BASE_URL}
+    volumes:
+      - hf_cache:/root/.cache/huggingface
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    ports:
+      - "8080:8080"
+    environment:
+      - GIN_MODE=debug
+      - AITUNNEL_API_KEY=${AITUNNEL_API_KEY}
+      - AITUNNEL_BASE_URL=${AITUNNEL_BASE_URL}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - YOOKASSA_SHOP_ID=${YOOKASSA_SHOP_ID}
+      - YOOKASSA_SECRET_KEY=${YOOKASSA_SECRET_KEY}
+      - MODERATION_SALT=${MODERATION_SALT}
+      - REDIS_URL=redis://redis:6379/0
+      - POSTGRES_DSN=postgres://arcana:arcana_password@postgres:5432/arcana_db?sslmode=disable
+      - QDRANT_URL=http://qdrant:6333
+      - EMBEDDINGS_SVC_URL=http://embeddings-svc:8000
+    depends_on:
+      - postgres
+      - redis
+      - qdrant
+      - embeddings-svc
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.frontend
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    environment:
+      - VITE_API_URL=http://localhost:8080
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:
+  redis_data:
+  qdrant_data:
+  hf_cache:
