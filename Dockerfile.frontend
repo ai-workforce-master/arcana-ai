@@ -1,0 +1,15 @@
+FROM node:18-alpine
+
+WORKDIR /app
+
+# Копируем файлы package.json для установки зависимостей
+COPY package.json package-lock.json* ./
+
+# Устанавливаем зависимости
+RUN npm install
+
+# Открываем порт Vite
+EXPOSE 5173
+
+# Запускаем сервер разработки с привязкой ко всем интерфейсам
+CMD ["npm", "run", "dev", "--", "--host"]
