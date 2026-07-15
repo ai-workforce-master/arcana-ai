@@ -1,3 +1,4 @@
+version: '3.8'
 
 services:
   postgres:
@@ -50,6 +51,21 @@ services:
     networks:
       - arcana-net
 
+  ingest:
+    build:
+      context: ./scripts/ingest
+      dockerfile: Dockerfile.ingest
+    container_name: arcana-ingest
+    environment:
+      - EMBEDDINGS_URL=http://embeddings-svc:8000/embed
+      - QDRANT_URL=http://qdrant:6333
+    depends_on:
+      - qdrant
+      - embeddings-svc
+    networks:
+      - arcana-net
+    # Сервис завершает работу после выполнения скрипта
+
   backend:
     build:
       context: .
@@ -74,6 +90,7 @@ services:
       - redis
       - qdrant
       - embeddings-svc
+      - ingest
     networks:
       - arcana-net
 
