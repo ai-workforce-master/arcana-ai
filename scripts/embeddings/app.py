@@ -8,7 +8,9 @@ app = FastAPI()
 
 # Загрузка лёгкой мультиязычной модели (~470MB)
 MODEL_NAME = "paraphrase-multilingual-MiniLM-L12-v2"
+print(f"🔄 Загрузка модели {MODEL_NAME}...")
 model = SentenceTransformer(MODEL_NAME)
+print(f"✅ Модель загружена. Размер вектора: {model.get_sentence_embedding_dimension()}")
 
 AITUNNEL_API_KEY = os.getenv("FALLBACK_AITUNNEL_API_KEY", "")
 AITUNNEL_BASE_URL = os.getenv("FALLBACK_AITUNNEL_BASE_URL", "https://api.aitunnel.ru/v1/")
@@ -21,10 +23,12 @@ async def embed(request: EmbedRequest):
     try:
         # Попытка локального эмбеддинга
         embedding = model.encode(request.text, convert_to_tensor=False).tolist()
+        print(f"✅ Локальный эмбеддинг успешен. Размер вектора: {len(embedding)}")
         return {"embedding": embedding, "source": "local"}
     except Exception as e:
         # Фоллбэк на AITunnel при ошибке локальной модели
-        print(f"Local embedding failed, falling back to AITunnel: {e}")
+        print(f"❌ Локальный эмбеддинг не удался: {e}")
+        print(f"🔄 Переключаемся на фоллбэк AITunnel...")
         return await fallback_to_aitunnel(request.text)
 
 async def fallback_to_aitunnel(text: str):
@@ -46,4 +50,6 @@ async def fallback_to_aitunnel(text: str):
             raise HTTPException(status_code=500, detail="Both local and fallback embedding failed")
         
         data = response.json()
-        return {"embedding": data["data"][0]["embedding"], "source": "aitunnel_fallback"}
+        embedding = data["data"][0]["embedding"]
+        print(f"✅ Фоллбэк AITunnel успешен. Размер вектора: {len(embedding)}")
+        return {"embedding": embedding, "source": "aitunnel_fallback"}
