@@ -3,16 +3,17 @@ FROM golang:1.23-alpine AS builder
 
 WORKDIR /app
 
-# Копируем только go.mod (без go.sum, чтобы go mod tidy сгенерировал его заново на сервере)
-COPY go.mod ./
+# 1. Копируем go.mod (и go.sum, если он вдруг остался)
+COPY go.mod go.sum* ./
 
-# Синхронизируем зависимости и скачиваем их (это решит проблему недостающих модулей)
-RUN go mod tidy && go mod download
-
-# Копируем исходный код
+# 2. Копируем ВЕСЬ исходный код СРАЗУ
 COPY . .
 
-# Собираем бинарный файл
+# 3. Синхронизируем зависимости на основе реального кода и скачиваем их.
+# Теперь это сработает корректно, так как код уже скопирован и не перезапишет результат.
+RUN go mod tidy && go mod download
+
+# 4. Собираем бинарный файл
 RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o main ./cmd/api/main.go
 
 # Финальный этап
@@ -20,11 +21,8 @@ FROM alpine:latest
 
 WORKDIR /root/
 
-# Копируем бинарный файл из этапа сборки
 COPY --from=builder /app/main .
 
-# Открываем порт
 EXPOSE 8080
 
-# Запускаем приложение
 CMD ["./main"]
