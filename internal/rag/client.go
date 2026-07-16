@@ -112,11 +112,11 @@ func (c *Client) Search(ctx context.Context, query string, limit uint64) ([]Sear
 		return nil, fmt.Errorf("embedding failed: %w", err)
 	}
 
-	// Используем стабильный и стандартный API Search
+	// В версии v1.12.0 используется метод Search, а Limit имеет тип uint64 (не указатель)
 	searchPoints := &qdrant.SearchPoints{
 		CollectionName: c.collection,
 		Vector:         vec,
-		Limit:          &limit, // Передаем указатель на uint64, как требует protobuf
+		Limit:          limit, 
 		WithPayload:    &qdrant.WithPayloadSelector{SelectorOptions: &qdrant.WithPayloadSelector_Enable{Enable: true}},
 	}
 

@@ -8,3 +8,6 @@ require (
 	github.com/qdrant/go-client v1.12.0
 	github.com/sashabaranov/go-openai v1.41.2
 )
+
+// Железно фиксируем версию, запрещая go mod tidy обновлять её
+replace github.com/qdrant/go-client => github.com/qdrant/go-client v1.12.0
