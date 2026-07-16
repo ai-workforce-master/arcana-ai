@@ -7,11 +7,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
 
 	"arcana-ai/internal/config"
-	qdrant "github.com/qdrant/go-client/qdrant"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
+	"github.com/qdrant/go-client/qdrant"
 )
 
 type Client struct {
@@ -22,12 +23,34 @@ type Client struct {
 }
 
 func NewClient(cfg *config.Config) (*Client, error) {
-	conn, err := grpc.NewClient(cfg.QdrantURL, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	u, err := url.Parse(cfg.QdrantURL)
 	if err != nil {
-		return nil, fmt.Errorf("failed to connect to Qdrant: %w", err)
+		return nil, fmt.Errorf("failed to parse Qdrant URL: %w", err)
 	}
 
-	client, err := qdrant.NewClient(conn)
+	// Go-клиент Qdrant использует gRPC, который работает на порту 6334 (а не 6333 для HTTP).
+	// Мы автоматически корректируем порт, если он указан как HTTP-порт.
+	portStr := u.Port()
+	if portStr == "6333" {
+		portStr = "6334"
+	} else if portStr == "16333" {
+		portStr = "16334" // Для локальной разработки с проброшенными портами
+	} else if portStr == "" {
+		portStr = "6334"
+	}
+
+	port, err := strconv.ParseUint(portStr, 10, 32)
+	if err != nil {
+		port = 6334
+	}
+
+	qdrantCfg := &qdrant.Config{
+		Host:   u.Hostname(),
+		Port:   uint32(port),
+		UseTLS: u.Scheme == "https",
+	}
+
+	client, err := qdrant.NewClient(qdrantCfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create Qdrant client: %w", err)
 	}
