@@ -27,7 +27,6 @@ func NewClient(cfg *config.Config) (*Client, error) {
 		return nil, fmt.Errorf("failed to parse Qdrant URL: %w", err)
 	}
 
-	// Go-клиент Qdrant использует gRPC (порт 6334), а не HTTP (порт 6333).
 	portStr := u.Port()
 	if portStr == "6333" {
 		portStr = "6334"
@@ -42,7 +41,6 @@ func NewClient(cfg *config.Config) (*Client, error) {
 		port = 6334
 	}
 
-	// В новых версиях Port имеет тип int
 	qdrantCfg := &qdrant.Config{
 		Host:   u.Hostname(),
 		Port:   port,
@@ -114,21 +112,21 @@ func (c *Client) Search(ctx context.Context, query string, limit uint64) ([]Sear
 		return nil, fmt.Errorf("embedding failed: %w", err)
 	}
 
-	// Используем новый универсальный API Query
-	searchPoints := &qdrant.QueryPoints{
+	// Используем стабильный и стандартный API Search
+	searchPoints := &qdrant.SearchPoints{
 		CollectionName: c.collection,
-		Limit:          &limit, // Исправлено: передаем указатель на uint64
-		Query:          qdrant.NewQueryDense(vec),
+		Vector:         vec,
+		Limit:          &limit, // Передаем указатель на uint64, как требует protobuf
 		WithPayload:    &qdrant.WithPayloadSelector{SelectorOptions: &qdrant.WithPayloadSelector_Enable{Enable: true}},
 	}
 
-	results, err := c.qdrantClient.Query(ctx, searchPoints)
+	results, err := c.qdrantClient.Search(ctx, searchPoints)
 	if err != nil {
-		return nil, fmt.Errorf("qdrant query failed: %w", err)
+		return nil, fmt.Errorf("qdrant search failed: %w", err)
 	}
 
 	var searchResults []SearchResult
-	for _, hit := range results {
+	for _, hit := range results.GetResult() {
 		payload := hit.GetPayload()
 		res := SearchResult{Score: hit.GetScore()}
 
