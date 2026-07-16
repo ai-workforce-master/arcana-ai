@@ -11,12 +11,12 @@ import (
 	"strconv"
 
 	"arcana-ai/internal/config"
-	qdrantclient "github.com/qdrant/go-client/qdrant"
+	"github.com/qdrant/go-client/qdrant"
 )
 
 type Client struct {
 	embeddingsURL string
-	qdrantClient  *qdrantclient.Client
+	qdrantClient  *qdrant.Client
 	collection    string
 	httpClient    *http.Client
 }
@@ -27,7 +27,6 @@ func NewClient(cfg *config.Config) (*Client, error) {
 		return nil, fmt.Errorf("failed to parse Qdrant URL: %w", err)
 	}
 
-	// Go-клиент Qdrant использует gRPC, который работает на порту 6334 (а не 6333 для HTTP).
 	portStr := u.Port()
 	if portStr == "6333" {
 		portStr = "6334"
@@ -42,13 +41,13 @@ func NewClient(cfg *config.Config) (*Client, error) {
 		port = 6334
 	}
 
-	qdrantCfg := &qdrantclient.Config{
+	qdrantCfg := &qdrant.Config{
 		Host:   u.Hostname(),
 		Port:   uint32(port),
 		UseTLS: u.Scheme == "https",
 	}
 
-	client, err := qdrantclient.NewClient(qdrantCfg)
+	client, err := qdrant.NewClient(qdrantCfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create Qdrant client: %w", err)
 	}
@@ -113,11 +112,11 @@ func (c *Client) Search(ctx context.Context, query string, limit uint64) ([]Sear
 		return nil, fmt.Errorf("embedding failed: %w", err)
 	}
 
-	searchPoints := &qdrantclient.SearchPoints{
+	searchPoints := &qdrant.SearchPoints{
 		CollectionName: c.collection,
 		Vector:         vec,
 		Limit:          limit,
-		WithPayload:    &qdrantclient.WithPayloadSelector{SelectorOptions: &qdrantclient.WithPayloadSelector_Enable{Enable: true}},
+		WithPayload:    &qdrant.WithPayloadSelector{SelectorOptions: &qdrant.WithPayloadSelector_Enable{Enable: true}},
 	}
 
 	results, err := c.qdrantClient.Search(ctx, searchPoints)
