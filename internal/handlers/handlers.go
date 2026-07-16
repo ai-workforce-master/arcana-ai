@@ -8,11 +8,13 @@ import (
 	"arcana-ai/internal/config"
 	"arcana-ai/internal/rag"
 	"github.com/gin-gonic/gin"
+	"github.com/sashabaranov/go-openai"
 )
 
 type Handler struct {
-	cfg *config.Config
-	rag *rag.Client
+	cfg       *config.Config
+	rag       *rag.Client
+	openAICli *openai.Client
 }
 
 func NewHandler(cfg *config.Config) (*Handler, error) {
@@ -20,7 +22,18 @@ func NewHandler(cfg *config.Config) (*Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Handler{cfg: cfg, rag: ragClient}, nil
+
+	// Настройка клиента для работы через AITunnel
+	openaiConfig := openai.DefaultConfig(cfg.AITunnelAPIKey)
+	openaiConfig.BaseURL = cfg.AITunnelBaseURL // Указываем endpoint AITunnel
+	
+	openAICli := openai.NewClientWithConfig(openaiConfig)
+
+	return &Handler{
+		cfg:       cfg,
+		rag:       ragClient,
+		openAICli: openAICli,
+	}, nil
 }
 
 func (h *Handler) RegisterRoutes(router *gin.Engine) {
@@ -56,26 +69,22 @@ func (h *Handler) TestRAG(c *gin.Context) {
 	})
 }
 
-// CardRequest описывает одну карту в запросе с указанием её положения
 type CardRequest struct {
 	Name       string `json:"name" binding:"required"`
 	IsReversed bool   `json:"is_reversed"`
 }
 
-// ReadSpreadRequest описывает ожидаемый JSON от фронтенда/бота
 type ReadSpreadRequest struct {
 	Question string        `json:"question" binding:"required"`
 	Spread   string        `json:"spread"`
 	Cards    []CardRequest `json:"cards" binding:"required"`
 }
 
-// EnrichedCardData объединяет данные из Qdrant с положением карты в раскладе
 type EnrichedCardData struct {
 	rag.CardData
 	IsReversed bool
 }
 
-// ReadSpread — эндпоинт: ищет карты по именам и собирает промпт для LLM с учётом положения
 func (h *Handler) ReadSpread(c *gin.Context) {
 	var req ReadSpreadRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -83,23 +92,19 @@ func (h *Handler) ReadSpread(c *gin.Context) {
 		return
 	}
 
-	// 1. Извлекаем только названия для поиска в Qdrant
 	cardNames := make([]string, len(req.Cards))
 	for i, card := range req.Cards {
 		cardNames[i] = card.Name
 	}
 
-	// 2. Получаем названия позиций из базы знаний (на основе Расклады_Таро.docx)
 	positions := getSpreadPositions(req.Spread, len(req.Cards))
 
-	// 3. Получаем базовые данные карт из Qdrant (точечный поиск по имени)
 	cardDataList, err := h.rag.GetCardsData(c.Request.Context(), cardNames, positions)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	// 4. Объединяем данные из Qdrant с информацией о положении карты из запроса
 	var enrichedCards []EnrichedCardData
 	for i, card := range cardDataList {
 		enrichedCards = append(enrichedCards, EnrichedCardData{
@@ -108,22 +113,41 @@ func (h *Handler) ReadSpread(c *gin.Context) {
 		})
 	}
 
-	// 5. Формируем промпт для LLM
 	prompt := buildLLMPrompt(req.Question, req.Spread, enrichedCards)
 
-	// TODO: Здесь будет вызов LLM через go-openai
-	// llmResponse, err := h.llm.Generate(c.Request.Context(), prompt)
+	// === ВЫЗОВ LLM ЧЕРЕЗ AITUNNEL ===
+	resp, err := h.openAICli.CreateChatCompletion(
+		c.Request.Context(),
+		openai.ChatCompletionRequest{
+			Model: "gpt-4o", // Или другая модель, доступная в вашем AITunnel (например, "gpt-3.5-turbo")
+			Messages: []openai.ChatCompletionMessage{
+				{
+					Role:    openai.ChatMessageRoleSystem,
+					Content: "Ты — опытный, эмпатичный и мудрый таролог. Твоя задача — давать глубокие, связные и поддерживающие интерпретации раскладов, строго опираясь на предоставленные данные о картах и их позициях.",
+				},
+				{
+					Role:    openai.ChatMessageRoleUser,
+					Content: prompt,
+				},
+			},
+			Temperature: 0.7,
+		},
+	)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("LLM generation failed via AITunnel: %v", err)})
+		return
+	}
 
-	// Пока возвращаем сформированный промпт для оценки качества
+	llmResponse := resp.Choices[0].Message.Content
+
 	c.JSON(http.StatusOK, gin.H{
 		"question":       req.Question,
 		"spread":         req.Spread,
-		"prompt_for_llm": prompt,
 		"cards_found":    len(enrichedCards),
+		"interpretation": llmResponse,
 	})
 }
 
-// getSpreadPositions возвращает названия позиций на основе данных из Расклады_Таро.docx
 func getSpreadPositions(spreadName string, cardCount int) []string {
 	spread := strings.ToLower(spreadName)
 
@@ -261,7 +285,6 @@ func getSpreadPositions(spreadName string, cardCount int) []string {
 		}
 	}
 
-	// Дефолтный вариант, если расклад не распознан
 	positions := make([]string, cardCount)
 	for i := 0; i < cardCount; i++ {
 		positions[i] = fmt.Sprintf("Позиция %d", i+1)
@@ -269,7 +292,6 @@ func getSpreadPositions(spreadName string, cardCount int) []string {
 	return positions
 }
 
-// buildLLMPrompt собирает финальный текст для LLM с учётом положения карт
 func buildLLMPrompt(question, spreadName string, cards []EnrichedCardData) string {
 	var sb strings.Builder
 
