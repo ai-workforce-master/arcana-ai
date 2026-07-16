@@ -117,12 +117,11 @@ func (c *Client) Search(ctx context.Context, query string, limit uint64) ([]Sear
 	// Используем новый универсальный API Query
 	searchPoints := &qdrant.QueryPoints{
 		CollectionName: c.collection,
-		Limit:          limit, // Теперь это uint64, а не *uint64
+		Limit:          &limit, // Исправлено: передаем указатель на uint64
 		Query:          qdrant.NewQueryDense(vec),
 		WithPayload:    &qdrant.WithPayloadSelector{SelectorOptions: &qdrant.WithPayloadSelector_Enable{Enable: true}},
 	}
 
-	// Вызываем Query вместо несуществующего Search
 	results, err := c.qdrantClient.Query(ctx, searchPoints)
 	if err != nil {
 		return nil, fmt.Errorf("qdrant query failed: %w", err)
