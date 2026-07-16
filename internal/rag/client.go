@@ -14,6 +14,15 @@ import (
 	"github.com/qdrant/go-client/qdrant"
 )
 
+// CardData хранит данные одной карты для сборки промпта LLM
+type CardData struct {
+	Name     string
+	Position string // Например: "1. Прошлое"
+	Upright  string
+	Reversed string
+	Advice   string
+}
+
 type Client struct {
 	embeddingsURL string
 	qdrantClient  *qdrant.Client
@@ -106,13 +115,13 @@ type SearchResult struct {
 	Score    float32 `json:"score"`
 }
 
+// Search — старый метод для тестового эндпоинта (семантический поиск)
 func (c *Client) Search(ctx context.Context, query string, limit uint64) ([]SearchResult, error) {
 	vec, err := c.GetEmbedding(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("embedding failed: %w", err)
 	}
 
-	// Используем актуальный API Query (стандарт для qdrant/go-client >= v1.10.0)
 	searchPoints := &qdrant.QueryPoints{
 		CollectionName: c.collection,
 		Query:          qdrant.NewQueryDense(vec),
@@ -152,4 +161,62 @@ func (c *Client) Search(ctx context.Context, query string, limit uint64) ([]Sear
 	}
 
 	return searchResults, nil
+}
+
+// GetCardsData ищет данные для списка названий карт.
+// Для каждого названия делаем отдельный точечный поиск (limit=1),
+// так как семантическая близость имени карты к самому себе максимальна.
+func (c *Client) GetCardsData(ctx context.Context, cardNames []string, spreadPositions []string) ([]CardData, error) {
+	var results []CardData
+	var limit uint64 = 1
+
+	for i, name := range cardNames {
+		// Определяем название позиции
+		posName := fmt.Sprintf("Позиция %d", i+1)
+		if i < len(spreadPositions) && spreadPositions[i] != "" {
+			posName = fmt.Sprintf("%d. %s", i+1, spreadPositions[i])
+		}
+
+		// Получаем вектор ТОЛЬКО для названия карты (короткий запрос = точное попадание)
+		vec, err := c.GetEmbedding(ctx, name)
+		if err != nil {
+			return nil, fmt.Errorf("failed to embed card name '%s': %w", name, err)
+		}
+
+		searchPoints := &qdrant.QueryPoints{
+			CollectionName: c.collection,
+			Query:          qdrant.NewQueryDense(vec),
+			Limit:          &limit,
+			WithPayload:    &qdrant.WithPayloadSelector{SelectorOptions: &qdrant.WithPayloadSelector_Enable{Enable: true}},
+		}
+
+		hits, err := c.qdrantClient.Query(ctx, searchPoints)
+		if err != nil {
+			return nil, fmt.Errorf("qdrant query failed for '%s': %w", name, err)
+		}
+
+		if len(hits) > 0 {
+			hit := hits[0]
+			payload := hit.GetPayload()
+
+			card := CardData{
+				Position: posName,
+			}
+			if v, ok := payload["name"]; ok {
+				card.Name = v.GetStringValue()
+			}
+			if v, ok := payload["upright"]; ok {
+				card.Upright = v.GetStringValue()
+			}
+			if v, ok := payload["reversed"]; ok {
+				card.Reversed = v.GetStringValue()
+			}
+			if v, ok := payload["advice"]; ok {
+				card.Advice = v.GetStringValue()
+			}
+			results = append(results, card)
+		}
+	}
+
+	return results, nil
 }
