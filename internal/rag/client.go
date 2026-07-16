@@ -112,21 +112,21 @@ func (c *Client) Search(ctx context.Context, query string, limit uint64) ([]Sear
 		return nil, fmt.Errorf("embedding failed: %w", err)
 	}
 
-	// В версии v1.12.0 используется метод Search, а Limit имеет тип uint64 (не указатель)
-	searchPoints := &qdrant.SearchPoints{
+	// Используем актуальный API Query, доступный в Qdrant >= 1.10.0
+	searchPoints := &qdrant.QueryPoints{
 		CollectionName: c.collection,
-		Vector:         vec,
-		Limit:          limit, 
+		Query:          qdrant.NewQueryDense(vec),
+		Limit:          &limit,
 		WithPayload:    &qdrant.WithPayloadSelector{SelectorOptions: &qdrant.WithPayloadSelector_Enable{Enable: true}},
 	}
 
-	results, err := c.qdrantClient.Search(ctx, searchPoints)
+	results, err := c.qdrantClient.Query(ctx, searchPoints)
 	if err != nil {
-		return nil, fmt.Errorf("qdrant search failed: %w", err)
+		return nil, fmt.Errorf("qdrant query failed: %w", err)
 	}
 
 	var searchResults []SearchResult
-	for _, hit := range results.GetResult() {
+	for _, hit := range results {
 		payload := hit.GetPayload()
 		res := SearchResult{Score: hit.GetScore()}
 
