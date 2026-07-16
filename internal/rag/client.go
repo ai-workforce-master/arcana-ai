@@ -164,7 +164,7 @@ func (c *Client) Search(ctx context.Context, query string, limit uint64) ([]Sear
 }
 
 // GetCardsData использует Scroll для 100% точного поиска по названию.
-// Поскольку карт всего 78, загрузка всех записей в память занимает < 5 мс и гарантирует 
+// Поскольку карт всего 78, загрузка всех записей в память занимает < 5 мс и гарантирует
 // отсутствие ошибок векторного поиска для коротких строк.
 func (c *Client) GetCardsData(ctx context.Context, cardNames []string, spreadPositions []string) ([]CardData, error) {
 	var limit uint32 = 100 // Больше, чем 78 карт в колоде
@@ -175,17 +175,18 @@ func (c *Client) GetCardsData(ctx context.Context, cardNames []string, spreadPos
 		WithPayload:    &qdrant.WithPayloadSelector{SelectorOptions: &qdrant.WithPayloadSelector_Enable{Enable: true}},
 	}
 
-	result, err := c.qdrantClient.Scroll(ctx, scrollPoints)
+	// В версии v1.12.0 Scroll возвращает напрямую []*qdrant.RetrievedPoint
+	points, err := c.qdrantClient.Scroll(ctx, scrollPoints)
 	if err != nil {
 		return nil, fmt.Errorf("qdrant scroll failed: %w", err)
 	}
 
 	// Строим карту для мгновенного O(1) поиска по названию (в нижнем регистре)
 	cardMap := make(map[string]CardData)
-	for _, point := range result.GetResult() {
+	for _, point := range points {
 		payload := point.GetPayload()
 		var name, upright, reversed, advice string
-		
+
 		if v, ok := payload["name"]; ok {
 			name = v.GetStringValue()
 		}
