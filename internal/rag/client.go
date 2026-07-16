@@ -9,10 +9,9 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
-	"strings"
 
 	"arcana-ai/internal/config"
-	"github.com/qdrant/go-client/qdrant"
+	qdrant "github.com/qdrant/go-client/qdrant"
 )
 
 type Client struct {
@@ -29,12 +28,11 @@ func NewClient(cfg *config.Config) (*Client, error) {
 	}
 
 	// Go-клиент Qdrant использует gRPC, который работает на порту 6334 (а не 6333 для HTTP).
-	// Мы автоматически корректируем порт, если он указан как HTTP-порт.
 	portStr := u.Port()
 	if portStr == "6333" {
 		portStr = "6334"
 	} else if portStr == "16333" {
-		portStr = "16334" // Для локальной разработки с проброшенными портами
+		portStr = "16334"
 	} else if portStr == "" {
 		portStr = "6334"
 	}
