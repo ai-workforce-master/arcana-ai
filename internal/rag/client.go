@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 
 	"arcana-ai/internal/config"
 	"github.com/qdrant/go-client/qdrant"
@@ -17,7 +18,7 @@ import (
 // CardData хранит данные одной карты для сборки промпта LLM
 type CardData struct {
 	Name     string
-	Position string // Например: "1. Прошлое"
+	Position string
 	Upright  string
 	Reversed string
 	Advice   string
@@ -115,7 +116,6 @@ type SearchResult struct {
 	Score    float32 `json:"score"`
 }
 
-// Search — старый метод для тестового эндпоинта (семантический поиск)
 func (c *Client) Search(ctx context.Context, query string, limit uint64) ([]SearchResult, error) {
 	vec, err := c.GetEmbedding(ctx, query)
 	if err != nil {
@@ -163,58 +163,72 @@ func (c *Client) Search(ctx context.Context, query string, limit uint64) ([]Sear
 	return searchResults, nil
 }
 
-// GetCardsData ищет данные для списка названий карт.
-// Для каждого названия делаем отдельный точечный поиск (limit=1),
-// так как семантическая близость имени карты к самому себе максимальна.
+// GetCardsData использует Scroll для 100% точного поиска по названию.
+// Поскольку карт всего 78, загрузка всех записей в память занимает < 5 мс и гарантирует 
+// отсутствие ошибок векторного поиска для коротких строк.
 func (c *Client) GetCardsData(ctx context.Context, cardNames []string, spreadPositions []string) ([]CardData, error) {
-	var results []CardData
-	var limit uint64 = 1
+	var limit uint32 = 100 // Больше, чем 78 карт в колоде
 
-	for i, name := range cardNames {
-		// Определяем название позиции
+	scrollPoints := &qdrant.ScrollPoints{
+		CollectionName: c.collection,
+		Limit:          &limit,
+		WithPayload:    &qdrant.WithPayloadSelector{SelectorOptions: &qdrant.WithPayloadSelector_Enable{Enable: true}},
+	}
+
+	result, err := c.qdrantClient.Scroll(ctx, scrollPoints)
+	if err != nil {
+		return nil, fmt.Errorf("qdrant scroll failed: %w", err)
+	}
+
+	// Строим карту для мгновенного O(1) поиска по названию (в нижнем регистре)
+	cardMap := make(map[string]CardData)
+	for _, point := range result.GetResult() {
+		payload := point.GetPayload()
+		var name, upright, reversed, advice string
+		
+		if v, ok := payload["name"]; ok {
+			name = v.GetStringValue()
+		}
+		if v, ok := payload["upright"]; ok {
+			upright = v.GetStringValue()
+		}
+		if v, ok := payload["reversed"]; ok {
+			reversed = v.GetStringValue()
+		}
+		if v, ok := payload["advice"]; ok {
+			advice = v.GetStringValue()
+		}
+
+		if name != "" {
+			cardMap[strings.ToLower(strings.TrimSpace(name))] = CardData{
+				Name:     name,
+				Upright:  upright,
+				Reversed: reversed,
+				Advice:   advice,
+			}
+		}
+	}
+
+	var results []CardData
+	for i, reqName := range cardNames {
 		posName := fmt.Sprintf("Позиция %d", i+1)
 		if i < len(spreadPositions) && spreadPositions[i] != "" {
 			posName = fmt.Sprintf("%d. %s", i+1, spreadPositions[i])
 		}
 
-		// Получаем вектор ТОЛЬКО для названия карты (короткий запрос = точное попадание)
-		vec, err := c.GetEmbedding(ctx, name)
-		if err != nil {
-			return nil, fmt.Errorf("failed to embed card name '%s': %w", name, err)
-		}
-
-		searchPoints := &qdrant.QueryPoints{
-			CollectionName: c.collection,
-			Query:          qdrant.NewQueryDense(vec),
-			Limit:          &limit,
-			WithPayload:    &qdrant.WithPayloadSelector{SelectorOptions: &qdrant.WithPayloadSelector_Enable{Enable: true}},
-		}
-
-		hits, err := c.qdrantClient.Query(ctx, searchPoints)
-		if err != nil {
-			return nil, fmt.Errorf("qdrant query failed for '%s': %w", name, err)
-		}
-
-		if len(hits) > 0 {
-			hit := hits[0]
-			payload := hit.GetPayload()
-
-			card := CardData{
-				Position: posName,
-			}
-			if v, ok := payload["name"]; ok {
-				card.Name = v.GetStringValue()
-			}
-			if v, ok := payload["upright"]; ok {
-				card.Upright = v.GetStringValue()
-			}
-			if v, ok := payload["reversed"]; ok {
-				card.Reversed = v.GetStringValue()
-			}
-			if v, ok := payload["advice"]; ok {
-				card.Advice = v.GetStringValue()
-			}
+		lookupName := strings.ToLower(strings.TrimSpace(reqName))
+		if card, exists := cardMap[lookupName]; exists {
+			card.Position = posName
 			results = append(results, card)
+		} else {
+			// Fallback, если карта не найдена (например, опечатка в названии)
+			results = append(results, CardData{
+				Name:     reqName,
+				Position: posName,
+				Upright:  "Карта не найдена в базе знаний. Проверьте правильность названия.",
+				Reversed: "",
+				Advice:   "Убедитесь, что название карты совпадает с классическим названием Таро.",
+			})
 		}
 	}
 
