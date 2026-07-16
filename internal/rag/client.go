@@ -11,7 +11,7 @@ import (
 	"strconv"
 
 	"arcana-ai/internal/config"
-	qdrant "github.com/qdrant/go-client/qdrant"
+	"github.com/qdrant/go-client/qdrant"
 )
 
 type Client struct {
