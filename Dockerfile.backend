@@ -1,27 +1,21 @@
-# Этап сборки
 FROM golang:1.24-alpine AS builder
 
-# Устанавливаем git, необходимый для go mod tidy
 RUN apk add --no-cache git
 
 WORKDIR /app
 
-# Разрешаем Go автоматически скачать более новый тулчейн, если он потребуется зависимостям
-ENV GOTOOLCHAIN=auto
-
-# 1. Копируем файлы модуля
 COPY go.mod go.sum* ./
 
-# 2. Копируем весь исходный код
+# ЖЕСТКО фиксируем версию клиента Qdrant, совместимую с сервером v1.7.0
+# Это предотвращает автоматическое обновление до v1.18.3 с ломающими изменениями API
+RUN go get github.com/qdrant/go-client@v1.12.0
+
 COPY . .
 
-# 3. Синхронизируем и скачиваем зависимости (теперь Go сам разберется с версиями)
 RUN go mod tidy && go mod download
 
-# 4. Собираем бинарный файл
 RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o main ./cmd/api/main.go
 
-# Финальный этап
 FROM alpine:latest
 
 WORKDIR /root/
