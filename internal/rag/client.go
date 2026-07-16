@@ -11,13 +11,12 @@ import (
 	"strconv"
 
 	"arcana-ai/internal/config"
-	qdrantclient "github.com/qdrant/go-client"
 	"github.com/qdrant/go-client/qdrant"
 )
 
 type Client struct {
 	embeddingsURL string
-	qdrantClient  *qdrantclient.Client
+	qdrantClient  *qdrant.Client
 	collection    string
 	httpClient    *http.Client
 }
@@ -28,7 +27,6 @@ func NewClient(cfg *config.Config) (*Client, error) {
 		return nil, fmt.Errorf("failed to parse Qdrant URL: %w", err)
 	}
 
-	// Go-клиент Qdrant использует gRPC (порт 6334), а не HTTP (порт 6333).
 	portStr := u.Port()
 	if portStr == "6333" {
 		portStr = "6334"
@@ -43,13 +41,13 @@ func NewClient(cfg *config.Config) (*Client, error) {
 		port = 6334
 	}
 
-	qdrantCfg := &qdrantclient.Config{
+	qdrantCfg := &qdrant.Config{
 		Host:   u.Hostname(),
 		Port:   uint32(port),
 		UseTLS: u.Scheme == "https",
 	}
 
-	client, err := qdrantclient.NewClient(qdrantCfg)
+	client, err := qdrant.NewClient(qdrantCfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create Qdrant client: %w", err)
 	}
