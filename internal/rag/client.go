@@ -112,7 +112,7 @@ func (c *Client) Search(ctx context.Context, query string, limit uint64) ([]Sear
 		return nil, fmt.Errorf("embedding failed: %w", err)
 	}
 
-	// Используем актуальный API Query, доступный в Qdrant >= 1.10.0
+	// Используем актуальный API Query (стандарт для qdrant/go-client >= v1.10.0)
 	searchPoints := &qdrant.QueryPoints{
 		CollectionName: c.collection,
 		Query:          qdrant.NewQueryDense(vec),
