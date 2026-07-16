@@ -3,20 +3,17 @@ FROM golang:1.23-alpine AS builder
 
 WORKDIR /app
 
-# 1. Копируем go.mod (даже если он "грязный")
-COPY go.mod ./
+# 1. Копируем go.mod (и go.sum, если он вдруг остался)
+COPY go.mod go.sum* ./
 
-# 2. ЯВНО и принудительно фиксируем нужную версию ПЕРЕД запуском go mod tidy.
-# Это перезапишет любые попытки авто-обновления внутри контейнера.
-RUN go get github.com/qdrant/go-client@v1.9.0
-
-# 3. Синхронизируем остальные зависимости и скачиваем их
-RUN go mod tidy && go mod download
-
-# 4. Копируем исходный код
+# 2. Копируем ВЕСЬ исходный код проекта
 COPY . .
 
-# 5. Собираем бинарный файл
+# 3. Синхронизируем зависимости. 
+# Теперь Go видит весь код и корректно сгенерирует полный go.sum и скачает всё нужное.
+RUN go mod tidy && go mod download
+
+# 4. Собираем бинарный файл
 RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o main ./cmd/api/main.go
 
 # Финальный этап
