@@ -11,12 +11,12 @@ import (
 	"strconv"
 
 	"arcana-ai/internal/config"
-	"github.com/qdrant/go-client/qdrant"
+	qdrantclient "github.com/qdrant/go-client/qdrant"
 )
 
 type Client struct {
 	embeddingsURL string
-	qdrantClient  *qdrant.Client
+	qdrantClient  *qdrantclient.Client
 	collection    string
 	httpClient    *http.Client
 }
@@ -42,13 +42,13 @@ func NewClient(cfg *config.Config) (*Client, error) {
 		port = 6334
 	}
 
-	qdrantCfg := &qdrant.Config{
+	qdrantCfg := &qdrantclient.Config{
 		Host:   u.Hostname(),
 		Port:   uint32(port),
 		UseTLS: u.Scheme == "https",
 	}
 
-	client, err := qdrant.NewClient(qdrantCfg)
+	client, err := qdrantclient.NewClient(qdrantCfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create Qdrant client: %w", err)
 	}
@@ -113,11 +113,11 @@ func (c *Client) Search(ctx context.Context, query string, limit uint64) ([]Sear
 		return nil, fmt.Errorf("embedding failed: %w", err)
 	}
 
-	searchPoints := &qdrant.SearchPoints{
+	searchPoints := &qdrantclient.SearchPoints{
 		CollectionName: c.collection,
 		Vector:         vec,
 		Limit:          limit,
-		WithPayload:    &qdrant.WithPayloadSelector{SelectorOptions: &qdrant.WithPayloadSelector_Enable{Enable: true}},
+		WithPayload:    &qdrantclient.WithPayloadSelector{SelectorOptions: &qdrantclient.WithPayloadSelector_Enable{Enable: true}},
 	}
 
 	results, err := c.qdrantClient.Search(ctx, searchPoints)
