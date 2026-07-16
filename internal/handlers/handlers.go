@@ -56,14 +56,26 @@ func (h *Handler) TestRAG(c *gin.Context) {
 	})
 }
 
-// ReadSpreadRequest описывает ожидаемый JSON от фронтенда/бота
-type ReadSpreadRequest struct {
-	Question string   `json:"question" binding:"required"`
-	Spread   string   `json:"spread"`
-	Cards    []string `json:"cards" binding:"required"`
+// CardRequest описывает одну карту в запросе с указанием её положения
+type CardRequest struct {
+	Name       string `json:"name" binding:"required"`
+	IsReversed bool   `json:"is_reversed"`
 }
 
-// ReadSpread — новый эндпоинт: ищет карты по именам и собирает промпт для LLM
+// ReadSpreadRequest описывает ожидаемый JSON от фронтенда/бота
+type ReadSpreadRequest struct {
+	Question string        `json:"question" binding:"required"`
+	Spread   string        `json:"spread"`
+	Cards    []CardRequest `json:"cards" binding:"required"`
+}
+
+// EnrichedCardData объединяет данные из Qdrant с положением карты в раскладе
+type EnrichedCardData struct {
+	rag.CardData
+	IsReversed bool
+}
+
+// ReadSpread — эндпоинт: ищет карты по именам и собирает промпт для LLM с учётом положения
 func (h *Handler) ReadSpread(c *gin.Context) {
 	var req ReadSpreadRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -71,18 +83,33 @@ func (h *Handler) ReadSpread(c *gin.Context) {
 		return
 	}
 
-	// 1. Получаем названия позиций из базы знаний (на основе Расклады_Таро.docx)
+	// 1. Извлекаем только названия для поиска в Qdrant
+	cardNames := make([]string, len(req.Cards))
+	for i, card := range req.Cards {
+		cardNames[i] = card.Name
+	}
+
+	// 2. Получаем названия позиций из базы знаний (на основе Расклады_Таро.docx)
 	positions := getSpreadPositions(req.Spread, len(req.Cards))
 
-	// 2. Получаем данные карт из Qdrant (точечный поиск по имени каждой карты)
-	cardData, err := h.rag.GetCardsData(c.Request.Context(), req.Cards, positions)
+	// 3. Получаем базовые данные карт из Qdrant (точечный поиск по имени)
+	cardDataList, err := h.rag.GetCardsData(c.Request.Context(), cardNames, positions)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	// 3. Формируем промпт для LLM
-	prompt := buildLLMPrompt(req.Question, req.Spread, cardData)
+	// 4. Объединяем данные из Qdrant с информацией о положении карты из запроса
+	var enrichedCards []EnrichedCardData
+	for i, card := range cardDataList {
+		enrichedCards = append(enrichedCards, EnrichedCardData{
+			CardData:   card,
+			IsReversed: req.Cards[i].IsReversed,
+		})
+	}
+
+	// 5. Формируем промпт для LLM
+	prompt := buildLLMPrompt(req.Question, req.Spread, enrichedCards)
 
 	// TODO: Здесь будет вызов LLM через go-openai
 	// llmResponse, err := h.llm.Generate(c.Request.Context(), prompt)
@@ -92,7 +119,7 @@ func (h *Handler) ReadSpread(c *gin.Context) {
 		"question":       req.Question,
 		"spread":         req.Spread,
 		"prompt_for_llm": prompt,
-		"cards_found":    len(cardData),
+		"cards_found":    len(enrichedCards),
 	})
 }
 
@@ -100,12 +127,9 @@ func (h *Handler) ReadSpread(c *gin.Context) {
 func getSpreadPositions(spreadName string, cardCount int) []string {
 	spread := strings.ToLower(spreadName)
 
-	// 1. Одна карта (Карта дня)
 	if strings.Contains(spread, "одна карт") || strings.Contains(spread, "карта дня") || strings.Contains(spread, "одной карт") {
 		return []string{"Послание дня, основная энергия или тема"}
 	}
-
-	// 2. Да или Нет (3 карты)
 	if strings.Contains(spread, "да или нет") || strings.Contains(spread, "да/нет") {
 		return []string{
 			"Факторы ДА — что поддерживает положительный ответ",
@@ -113,8 +137,6 @@ func getSpreadPositions(spreadName string, cardCount int) []string {
 			"Итог — окончательный ответ и рекомендация",
 		}
 	}
-
-	// 3. Три карты / Триплет
 	if strings.Contains(spread, "три карт") || strings.Contains(spread, "триплет") {
 		return []string{
 			"Прошлое — что привело к текущей ситуации",
@@ -122,8 +144,6 @@ func getSpreadPositions(spreadName string, cardCount int) []string {
 			"Будущее — куда движется ситуация",
 		}
 	}
-
-	// 4. Крест (4 карты)
 	if strings.Contains(spread, "крест") && !strings.Contains(spread, "кельтский") {
 		return []string{
 			"Центр — суть ситуации, основная тема",
@@ -132,8 +152,6 @@ func getSpreadPositions(spreadName string, cardCount int) []string {
 			"Сверху — возможный итог, к чему всё идёт",
 		}
 	}
-
-	// 5. Пятикарточный расклад
 	if strings.Contains(spread, "пятикарточн") || strings.Contains(spread, "пять карт") {
 		return []string{
 			"Прошлое — события и опыт, повлиявшие на ситуацию",
@@ -143,8 +161,6 @@ func getSpreadPositions(spreadName string, cardCount int) []string {
 			"Возможный результат — вероятное развитие событий",
 		}
 	}
-
-	// 6. Подкова (7 карт)
 	if strings.Contains(spread, "подкова") {
 		return []string{
 			"Прошлое — что привело к текущей ситуации",
@@ -156,8 +172,6 @@ func getSpreadPositions(spreadName string, cardCount int) []string {
 			"Результат — вероятный итог",
 		}
 	}
-
-	// 7. Звезда / Чакральный расклад (7 карт)
 	if strings.Contains(spread, "звезда") || strings.Contains(spread, "чакр") {
 		return []string{
 			"Корневая чакра — материальная основа, безопасность",
@@ -169,8 +183,6 @@ func getSpreadPositions(spreadName string, cardCount int) []string {
 			"Коронная чакра — духовность, связь с высшим Я",
 		}
 	}
-
-	// 8. Пирамида (6 карт)
 	if strings.Contains(spread, "пирамида") {
 		return []string{
 			"Прошлые влияния (основа)",
@@ -181,8 +193,6 @@ func getSpreadPositions(spreadName string, cardCount int) []string {
 			"Конечный итог, главный урок (вершина)",
 		}
 	}
-
-	// 9. Кельтский крест (10 карт)
 	if strings.Contains(spread, "кельтский") {
 		return []string{
 			"Ситуация — суть проблемы, центральная тема",
@@ -197,8 +207,6 @@ func getSpreadPositions(spreadName string, cardCount int) []string {
 			"Результат — конечный итог ситуации",
 		}
 	}
-
-	// 10. Колесо года (12 карт)
 	if strings.Contains(spread, "колесо года") || strings.Contains(spread, "колесо") {
 		return []string{
 			"Январь — начало года, новые начинания",
@@ -215,8 +223,6 @@ func getSpreadPositions(spreadName string, cardCount int) []string {
 			"Декабрь — завершение цикла",
 		}
 	}
-
-	// 11. Алхимик (6 карт)
 	if strings.Contains(spread, "алхимик") {
 		return []string{
 			"Прошлое",
@@ -227,8 +233,6 @@ func getSpreadPositions(spreadName string, cardCount int) []string {
 			"Отдалённое будущее",
 		}
 	}
-
-	// 12. Слепое пятно (4 карты)
 	if strings.Contains(spread, "слепое пятно") {
 		return []string{
 			"Осознаваемая и демонстрируемая часть личности",
@@ -237,8 +241,6 @@ func getSpreadPositions(spreadName string, cardCount int) []string {
 			"Слепое пятно — то, что видят другие, но упускаете вы",
 		}
 	}
-
-	// 13. Партнёрство (7 карт)
 	if strings.Contains(spread, "партнёрство") || strings.Contains(spread, "партнерство") {
 		return []string{
 			"Сигнификатор — что управляет отношениями",
@@ -250,8 +252,6 @@ func getSpreadPositions(spreadName string, cardCount int) []string {
 			"Внешняя сторона отношений (партнёр)",
 		}
 	}
-
-	// 15. Голос Ангела-Хранителя (4 карты)
 	if strings.Contains(spread, "ангел") || strings.Contains(spread, "голос") {
 		return []string{
 			"Истоки ситуации — ключевые события и влияния",
@@ -269,8 +269,8 @@ func getSpreadPositions(spreadName string, cardCount int) []string {
 	return positions
 }
 
-// buildLLMPrompt собирает финальный текст для LLM
-func buildLLMPrompt(question, spreadName string, cards []rag.CardData) string {
+// buildLLMPrompt собирает финальный текст для LLM с учётом положения карт
+func buildLLMPrompt(question, spreadName string, cards []EnrichedCardData) string {
 	var sb strings.Builder
 
 	sb.WriteString("Ты — опытный таролог. Проинтерпретируй расклад на основе следующих данных.\n\n")
@@ -283,13 +283,23 @@ func buildLLMPrompt(question, spreadName string, cards []rag.CardData) string {
 	sb.WriteString("**Выпавшие карты и их позиции:**\n\n")
 
 	for _, card := range cards {
-		sb.WriteString(fmt.Sprintf("### %s: «%s»\n", card.Position, card.Name))
-		sb.WriteString(fmt.Sprintf("- *Общее значение:* %s\n", card.Upright))
-		sb.WriteString(fmt.Sprintf("- *Перевёрнутое значение:* %s\n", card.Reversed))
+		orientationText := "в прямом положении"
+		meaningText := card.Upright
+		
+		if card.IsReversed {
+			orientationText = "в перевёрнутом положении"
+			meaningText = card.Reversed
+			if meaningText == "" {
+				meaningText = "Специфическое перевёрнутое значение не указано, трактуй как блокировку или искажение энергии прямой позиции."
+			}
+		}
+
+		sb.WriteString(fmt.Sprintf("### %s: «%s» (%s)\n", card.Position, card.Name, orientationText))
+		sb.WriteString(fmt.Sprintf("- *Значение:* %s\n", meaningText))
 		sb.WriteString(fmt.Sprintf("- *Совет карты:* %s\n\n", card.Advice))
 	}
 
-	sb.WriteString("**Задача:** Дай связный, глубокий и эмпатичный ответ на вопрос кверента, опираясь на значения выпавших карт в их позициях. Не перечисляй сухие факты, а сплети их в единое повествование. Учитывай взаимосвязь между картами и их положение в раскладе.")
+	sb.WriteString("**Задача:** Дай связный, глубокий и эмпатичный ответ на вопрос кверента, опираясь на значения выпавших карт в их позициях и их положении (прямое или перевёрнутое). Не перечисляй сухие факты, а сплети их в единое повествование. Учитывай взаимосвязь между картами и их положение в раскладе.")
 
 	return sb.String()
 }
