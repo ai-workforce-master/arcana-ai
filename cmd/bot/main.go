@@ -58,7 +58,7 @@ var (
 	sessions      = make(map[int64]*UserSession)
 	sessionsMutex sync.RWMutex
 	botToken      = getEnv("TELEGRAM_BOT_TOKEN", "")
-	backendURL    = getEnv("BACKEND_URL", "http://backend:8080")
+	backendURL    = getEnv("BACKEND_URL", "http://127.0.0.1:18080") // Используем localhost из-за network_mode: host
 
 	paymentSimDelay = make(map[int64]time.Duration)
 	paymentSimMutex sync.RWMutex
@@ -69,7 +69,7 @@ var (
 const (
 	PaymentTokenLifetime = 1 * time.Hour
 	PaymentCheckTimeout  = 10 * time.Minute
-	PaymentPollInterval  = 5 * time.Second // Ускорили опрос до 5 секунд
+	PaymentPollInterval  = 5 * time.Second
 )
 
 var standardDeck = []string{
@@ -145,7 +145,6 @@ func generatePaymentToken() string {
 }
 
 func simulatePaymentDelay(chatID int64) {
-	// Ускорено до 3-5 секунд для удобного тестирования
 	delay := time.Duration(3+mrand.Intn(3)) * time.Second
 	paymentSimMutex.Lock()
 	paymentSimDelay[chatID] = delay
@@ -428,14 +427,17 @@ func main() {
 					IsReversed: card.IsReversed,
 				})
 
-				reversedIcon := ""
-				if card.IsReversed {
-					reversedIcon = " 🔄 (Перевёрнутая)"
-				}
-				
 				photo := tgbotapi.NewInputMediaPhoto(tgbotapi.FileURL(getCardImageURL(card.Name)))
-				photo.Caption = fmt.Sprintf("Позиция %d\n%s%s", i+1, card.Name, reversedIcon)
-				photo.ParseMode = "Markdown"
+				
+				// КРИТИЧЕСКИ ВАЖНО: Telegram разрешает подпись (Caption) ТОЛЬКО для первого элемента в MediaGroup!
+				if i == 0 {
+					reversedIcon := ""
+					if card.IsReversed {
+						reversedIcon = " 🔄 (Перевёрнутая)"
+					}
+					photo.Caption = fmt.Sprintf("🔮 *Расклад: %s*\n\nПозиция %d: *%s*%s", selectedSpread, i+1, card.Name, reversedIcon)
+					photo.ParseMode = "Markdown"
+				}
 				
 				mediaGroup = append(mediaGroup, photo)
 			}
