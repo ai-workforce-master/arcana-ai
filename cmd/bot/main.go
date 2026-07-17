@@ -8,11 +8,11 @@ import (
 	"log"
 	mrand "math/rand"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
 	"time"
-	"net/url"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
@@ -63,25 +63,13 @@ var (
 	paymentSimDelay = make(map[int64]time.Duration)
 	paymentSimMutex sync.RWMutex
 
-	// Базовый URL для изображений карт. 
-	// ЗАМЕНИТЕ это на ваш хостинг с реальными картинками (например, https://yourdomain.com/cards/)
 	baseImageURL = "https://placehold.co/300x500/1a1a2e/FFF?text="
 )
-
-// Соответствие русских названий файлов для картинок (для будущего использования с реальными изображениями)
-var cardImageFiles = map[string]string{
-	"Шут": "fool", "Маг": "magician", "Верховная Жрица": "high_priestess", "Императрица": "empress",
-	"Император": "emperor", "Иерофант": "hierophant", "Влюбленные": "lovers", "Колесница": "chariot",
-	"Сила": "strength", "Отшельник": "hermit", "Колесо Фортуны": "wheel_of_fortune", "Справедливость": "justice",
-	"Повешенный": "hanged_man", "Смерть": "death", "Умеренность": "temperance", "Дьявол": "devil",
-	"Башня": "tower", "Звезда": "star", "Луна": "moon", "Солнце": "sun", "Суд": "judgement", "Мир": "world",
-	// Для младших арканов можно добавить аналогичные маппинги или использовать генерацию имени файла
-}
 
 const (
 	PaymentTokenLifetime = 1 * time.Hour
 	PaymentCheckTimeout  = 10 * time.Minute
-	PaymentPollInterval  = 10 * time.Second
+	PaymentPollInterval  = 5 * time.Second // Ускорили опрос до 5 секунд
 )
 
 var standardDeck = []string{
@@ -157,10 +145,12 @@ func generatePaymentToken() string {
 }
 
 func simulatePaymentDelay(chatID int64) {
-	delay := time.Duration(5+mrand.Intn(25)) * time.Second
+	// Ускорено до 3-5 секунд для удобного тестирования
+	delay := time.Duration(3+mrand.Intn(3)) * time.Second
 	paymentSimMutex.Lock()
 	paymentSimDelay[chatID] = delay
 	paymentSimMutex.Unlock()
+	log.Printf("DEBUG: Simulated payment delay for chat %d set to %v", chatID, delay)
 }
 
 func checkPayment(chatID int64, clickTime time.Time) bool {
@@ -168,9 +158,13 @@ func checkPayment(chatID int64, clickTime time.Time) bool {
 	delay, exists := paymentSimDelay[chatID]
 	paymentSimMutex.RUnlock()
 	if !exists {
-		delay = 5 * time.Second
+		delay = 3 * time.Second
 	}
-	return time.Since(clickTime) >= delay
+	isPaid := time.Since(clickTime) >= delay
+	if isPaid {
+		log.Printf("DEBUG: Payment CONFIRMED for chat %d", chatID)
+	}
+	return isPaid
 }
 
 func getCardCount(spread string) int {
@@ -185,14 +179,10 @@ func getCardCount(spread string) int {
 }
 
 func getCardImageURL(cardName string) string {
-	// Если у вас есть реальные картинки, раскомментируйте и адаптируйте эту логику:
-	// fileName, exists := cardImageFiles[cardName]
-	// if !exists { fileName = strings.ReplaceAll(cardName, " ", "_") }
-	// return fmt.Sprintf("%s%s.jpg", baseImageURL, fileName)
-	
-	// Пока используем надежную заглушку, которая генерирует картинку с названием карты
 	encodedName := url.QueryEscape(cardName)
-	return fmt.Sprintf("%s%s", baseImageURL, encodedName)
+	urlStr := fmt.Sprintf("%s%s", baseImageURL, encodedName)
+	log.Printf("DEBUG: Generated image URL for '%s': %s", cardName, urlStr)
+	return urlStr
 }
 
 // --- Асинхронный поллер оплаты ---
@@ -207,6 +197,7 @@ func runPaymentPoller(bot *tgbotapi.BotAPI, chatID int64, token string, clickTim
 		case <-ticker.C:
 			session := getSession(chatID)
 			if session == nil || session.PaymentToken != token {
+				log.Printf("DEBUG: Poller stopped for chat %d (session nil or token mismatch)", chatID)
 				return
 			}
 			if checkPayment(chatID, clickTime) {
@@ -238,23 +229,27 @@ func runPaymentPoller(bot *tgbotapi.BotAPI, chatID int64, token string, clickTim
 // --- Анимация тасовки и визуальный расклад ---
 
 func startShuffleAndReading(bot *tgbotapi.BotAPI, chatID int64) {
+	log.Printf("DEBUG: startShuffleAndReading called for chat %d", chatID)
 	session := getSession(chatID)
-	if session == nil { return }
+	if session == nil {
+		log.Printf("DEBUG: session is nil in startShuffleAndReading")
+		return
+	}
 
 	session.Deck = generateDeck()
 	session.Step = "shuffling"
 	setSession(chatID, session)
 
-	// 1. Анимация тасовки через быструю правку одного сообщения
 	animMsg := tgbotapi.NewMessage(chatID, "🌪️ *Перемешиваем колоду...*")
 	animMsg.ParseMode = "Markdown"
 	sentMsg, _ := bot.Send(animMsg)
+	log.Printf("DEBUG: Sent initial shuffle message, ID: %d", sentMsg.MessageID)
 
 	time.Sleep(1200 * time.Millisecond)
-	bot.Send(tgbotapi.NewEditMessageText(chatID, sentMsg.MessageID, "🃏 *Карты выравниваются и заряжаются вашим намерением...*"))
+	bot.Request(tgbotapi.NewEditMessageText(chatID, sentMsg.MessageID, "🃏 *Карты выравниваются и заряжаются вашим намерением...*"))
 	
 	time.Sleep(1200 * time.Millisecond)
-	bot.Send(tgbotapi.NewEditMessageText(chatID, sentMsg.MessageID, "✨ *Колода готова к раскрытию тайн.*"))
+	bot.Request(tgbotapi.NewEditMessageText(chatID, sentMsg.MessageID, "✨ *Колода готова к раскрытию тайн.*"))
 	
 	time.Sleep(800 * time.Millisecond)
 
@@ -266,6 +261,7 @@ func startShuffleAndReading(bot *tgbotapi.BotAPI, chatID int64) {
 		),
 	)
 	bot.Send(msg)
+	log.Printf("DEBUG: Shuffle animation complete, waiting for cut_deck")
 }
 
 // --- Основная логика бота ---
@@ -309,6 +305,7 @@ func main() {
 			clearSession(chatID)
 			newSession := &UserSession{Step: "awaiting_question"}
 			setSession(chatID, newSession)
+			log.Printf("DEBUG: Started new session for chat %d", chatID)
 
 			msg := tgbotapi.NewMessage(chatID, "🔮 Добро пожаловать в Arcana AI!\n\nЗадайте ваш вопрос картам Таро (например: 'Что меня ждет в новом проекте?'):")
 			msg.ReplyMarkup = tgbotapi.NewRemoveKeyboard(true)
@@ -322,6 +319,7 @@ func main() {
 			session.Question = text
 			session.Step = "awaiting_spread"
 			setSession(chatID, session)
+			log.Printf("DEBUG: Question saved for chat %d: %s", chatID, text)
 
 			msg := tgbotapi.NewMessage(chatID, "Отличный вопрос! Выберите тип расклада:")
 			var buttons []tgbotapi.InlineKeyboardButton
@@ -370,6 +368,7 @@ func main() {
 					),
 				)
 				bot.Send(msg)
+				log.Printf("DEBUG: Payment prompt sent for chat %d", chatID)
 			}
 			continue
 		}
@@ -396,13 +395,15 @@ func main() {
 
 			callback := tgbotapi.NewCallback(update.CallbackQuery.ID, "Проверяем оплату...")
 			bot.Request(callback)
-			bot.Send(tgbotapi.NewMessage(chatID, "⏳ Проверяем оплату в системе... Это может занять до 10 минут.\n\n💡 Не закрывайте чат, мы сообщим о результате."))
+			bot.Send(tgbotapi.NewMessage(chatID, "⏳ Проверяем оплату в системе... Это займет несколько секунд.\n\n💡 Не закрывайте чат, мы сообщим о результате."))
+			log.Printf("DEBUG: Payment poller started for chat %d", chatID)
 			go runPaymentPoller(bot, chatID, session.PaymentToken, session.PaymentClickTime)
 			continue
 		}
 
 		// 5. Срез колоды и ВИЗУАЛЬНЫЙ РАСКЛАД
 		if update.CallbackQuery != nil && text == "cut_deck" {
+			log.Printf("DEBUG: cut_deck callback received for chat %d", chatID)
 			callback := tgbotapi.NewCallback(update.CallbackQuery.ID, "Колода срезана!")
 			bot.Request(callback)
 
@@ -412,13 +413,12 @@ func main() {
 
 			cutIndex := mrand.Intn(len(deck))
 			deck = append(deck[cutIndex:], deck[:cutIndex]...)
+			log.Printf("DEBUG: Deck cut at index %d", cutIndex)
 
 			bot.Send(tgbotapi.NewMessage(chatID, "🔮 Выкладываем карты на стол..."))
 
 			cardCount := getCardCount(selectedSpread)
 			var selectedCards []CardRequest
-			
-			// Формируем медиа-группу для визуального отображения карт (максимум 10 в Telegram)
 			var mediaGroup []interface{}
 			
 			for i := 0; i < cardCount && i < len(deck); i++ {
@@ -428,28 +428,30 @@ func main() {
 					IsReversed: card.IsReversed,
 				})
 
-				// Создаем элемент медиа-группы
 				reversedIcon := ""
 				if card.IsReversed {
 					reversedIcon = " 🔄 (Перевёрнутая)"
 				}
 				
 				photo := tgbotapi.NewInputMediaPhoto(tgbotapi.FileURL(getCardImageURL(card.Name)))
-				// Caption поддерживает Markdown, но в MediaGroup он ограничен. Используем простой текст.
 				photo.Caption = fmt.Sprintf("Позиция %d\n%s%s", i+1, card.Name, reversedIcon)
 				photo.ParseMode = "Markdown"
 				
 				mediaGroup = append(mediaGroup, photo)
 			}
 
-			// Отправляем карты альбомом (это выглядит как настоящий расклад на столе)
 			if len(mediaGroup) > 0 {
-				bot.Send(tgbotapi.NewMediaGroup(chatID, mediaGroup))
+				log.Printf("DEBUG: Attempting to send MediaGroup with %d items", len(mediaGroup))
+				_, err := bot.Send(tgbotapi.NewMediaGroup(chatID, mediaGroup))
+				if err != nil {
+					log.Printf("ERROR: Failed to send MediaGroup: %v", err)
+				} else {
+					log.Printf("DEBUG: MediaGroup sent successfully")
+				}
 			}
 
 			bot.Send(tgbotapi.NewMessage(chatID, "⏳ Запрашиваем мудрость ИИ для интерпретации этого расклада..."))
 
-			// Вызов бэкенда
 			reqBody := ReadSpreadRequest{
 				Question: question,
 				Spread:   selectedSpread,
@@ -482,6 +484,7 @@ func main() {
 			answerMsg := tgbotapi.NewMessage(chatID, answerText)
 			answerMsg.ParseMode = "Markdown"
 			bot.Send(answerMsg)
+			log.Printf("DEBUG: Final interpretation sent for chat %d", chatID)
 			continue
 		}
 
