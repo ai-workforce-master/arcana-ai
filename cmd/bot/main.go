@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"net/url"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
@@ -43,11 +44,11 @@ type UserSession struct {
 	Question             string
 	SelectedSpread       string
 	SpreadPrice          int
-	PaymentToken         string    // UUID платежа
-	PaymentCreatedAt     time.Time // когда создан платёж (живёт 1 час)
-	PaymentClickTime     time.Time // когда пользователь нажал "Я оплатил"
-	PaymentCheckUntil    time.Time // до какого времени проверяем (10 минут)
-	PaymentPollingActive bool      // запущен ли поллер
+	PaymentToken         string
+	PaymentCreatedAt     time.Time
+	PaymentClickTime     time.Time
+	PaymentCheckUntil    time.Time
+	PaymentPollingActive bool
 	Deck                 []Card
 }
 
@@ -59,20 +60,30 @@ var (
 	botToken      = getEnv("TELEGRAM_BOT_TOKEN", "")
 	backendURL    = getEnv("BACKEND_URL", "http://backend:8080")
 
-	// Имитация задержки подтверждения платежа для каждого пользователя
 	paymentSimDelay = make(map[int64]time.Duration)
 	paymentSimMutex sync.RWMutex
+
+	// Базовый URL для изображений карт. 
+	// ЗАМЕНИТЕ это на ваш хостинг с реальными картинками (например, https://yourdomain.com/cards/)
+	baseImageURL = "https://placehold.co/300x500/1a1a2e/FFF?text="
 )
 
-// --- Константы ---
+// Соответствие русских названий файлов для картинок (для будущего использования с реальными изображениями)
+var cardImageFiles = map[string]string{
+	"Шут": "fool", "Маг": "magician", "Верховная Жрица": "high_priestess", "Императрица": "empress",
+	"Император": "emperor", "Иерофант": "hierophant", "Влюбленные": "lovers", "Колесница": "chariot",
+	"Сила": "strength", "Отшельник": "hermit", "Колесо Фортуны": "wheel_of_fortune", "Справедливость": "justice",
+	"Повешенный": "hanged_man", "Смерть": "death", "Умеренность": "temperance", "Дьявол": "devil",
+	"Башня": "tower", "Звезда": "star", "Луна": "moon", "Солнце": "sun", "Суд": "judgement", "Мир": "world",
+	// Для младших арканов можно добавить аналогичные маппинги или использовать генерацию имени файла
+}
 
 const (
-	PaymentTokenLifetime = 1 * time.Hour    // Токен живёт 1 час
-	PaymentCheckTimeout  = 10 * time.Minute // Ждём подтверждения 10 минут
-	PaymentPollInterval  = 10 * time.Second // Опрос каждые 10 секунд
+	PaymentTokenLifetime = 1 * time.Hour
+	PaymentCheckTimeout  = 10 * time.Minute
+	PaymentPollInterval  = 10 * time.Second
 )
 
-// Стандартная колода из 78 карт
 var standardDeck = []string{
 	"Шут", "Маг", "Верховная Жрица", "Императрица", "Император", "Иерофант", "Влюбленные", "Колесница", "Сила", "Отшельник",
 	"Колесо Фортуны", "Справедливость", "Повешенный", "Смерть", "Умеренность", "Дьявол", "Башня", "Звезда", "Луна", "Солнце",
@@ -129,10 +140,9 @@ func generateDeck() []Card {
 	for i, name := range standardDeck {
 		deck[i] = Card{
 			Name:       name,
-			IsReversed: mrand.Float32() < 0.3, // 30% шанс перевернутой карты
+			IsReversed: mrand.Float32() < 0.3,
 		}
 	}
-	// Перемешиваем колоду (алгоритм Фишера-Йетса)
 	for i := len(deck) - 1; i > 0; i-- {
 		j := mrand.Intn(i + 1)
 		deck[i], deck[j] = deck[j], deck[i]
@@ -146,7 +156,6 @@ func generatePaymentToken() string {
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
 }
 
-// simulatePaymentDelay имитирует случайную задержку подтверждения платежа (5-30 секунд)
 func simulatePaymentDelay(chatID int64) {
 	delay := time.Duration(5+mrand.Intn(25)) * time.Second
 	paymentSimMutex.Lock()
@@ -154,40 +163,36 @@ func simulatePaymentDelay(chatID int64) {
 	paymentSimMutex.Unlock()
 }
 
-// checkPayment имитирует проверку статуса платежа в платёжной системе
 func checkPayment(chatID int64, clickTime time.Time) bool {
 	paymentSimMutex.RLock()
 	delay, exists := paymentSimDelay[chatID]
 	paymentSimMutex.RUnlock()
-
 	if !exists {
 		delay = 5 * time.Second
 	}
-
 	return time.Since(clickTime) >= delay
 }
 
 func getCardCount(spread string) int {
 	s := strings.ToLower(spread)
-	if strings.Contains(s, "одна") {
-		return 1
-	}
-	if strings.Contains(s, "да или нет") {
-		return 3
-	}
-	if strings.Contains(s, "три") {
-		return 3
-	}
-	if strings.Contains(s, "крест") && !strings.Contains(s, "кельтский") {
-		return 4
-	}
-	if strings.Contains(s, "пятикарточн") {
-		return 5
-	}
-	if strings.Contains(s, "кельтский") {
-		return 10
-	}
+	if strings.Contains(s, "одна") { return 1 }
+	if strings.Contains(s, "да или нет") { return 3 }
+	if strings.Contains(s, "три") { return 3 }
+	if strings.Contains(s, "крест") && !strings.Contains(s, "кельтский") { return 4 }
+	if strings.Contains(s, "пятикарточн") { return 5 }
+	if strings.Contains(s, "кельтский") { return 10 }
 	return 3
+}
+
+func getCardImageURL(cardName string) string {
+	// Если у вас есть реальные картинки, раскомментируйте и адаптируйте эту логику:
+	// fileName, exists := cardImageFiles[cardName]
+	// if !exists { fileName = strings.ReplaceAll(cardName, " ", "_") }
+	// return fmt.Sprintf("%s%s.jpg", baseImageURL, fileName)
+	
+	// Пока используем надежную заглушку, которая генерирует картинку с названием карты
+	encodedName := url.QueryEscape(cardName)
+	return fmt.Sprintf("%s%s", baseImageURL, encodedName)
 }
 
 // --- Асинхронный поллер оплаты ---
@@ -195,42 +200,32 @@ func getCardCount(spread string) int {
 func runPaymentPoller(bot *tgbotapi.BotAPI, chatID int64, token string, clickTime time.Time) {
 	ticker := time.NewTicker(PaymentPollInterval)
 	defer ticker.Stop()
-
 	timeout := time.After(PaymentCheckTimeout)
 
 	for {
 		select {
 		case <-ticker.C:
-			// Проверяем, существует ли ещё сессия с этим токеном
 			session := getSession(chatID)
 			if session == nil || session.PaymentToken != token {
-				return // Сессия была очищена или токен изменился
+				return
 			}
-
 			if checkPayment(chatID, clickTime) {
-				// Оплата подтверждена!
 				bot.Send(tgbotapi.NewMessage(chatID, "✅ Оплата подтверждена! Начинаем ритуал..."))
 				go startShuffleAndReading(bot, chatID)
 				return
 			}
 		case <-timeout:
-			// Время ожидания истекло
 			session := getSession(chatID)
 			if session != nil && session.PaymentToken == token {
 				remaining := PaymentTokenLifetime - time.Since(session.PaymentCreatedAt)
 				var msg string
 				if remaining > 0 {
-					msg = fmt.Sprintf(
-						"⏳ К сожалению, оплата не была подтверждена в течение 10 минут.\n\n💡 Ваш токен ещё действителен (осталось %d минут). Вы можете попробовать снова, нажав '✅ Я оплатил', или начать заново с /start",
-						int(remaining.Minutes()),
-					)
+					msg = fmt.Sprintf("⏳ К сожалению, оплата не была подтверждена в течение 10 минут.\n\n💡 Ваш токен ещё действителен (осталось %d минут). Вы можете попробовать снова, нажав '✅ Я оплатил', или начать заново с /start", int(remaining.Minutes()))
 				} else {
 					msg = "⏳ К сожалению, оплата не была подтверждена, и токен истёк. Начните заново с /start"
 					clearSession(chatID)
 				}
 				bot.Send(tgbotapi.NewMessage(chatID, msg))
-
-				// Сбрасываем флаг поллинга, но не очищаем сессию (если токен ещё жив)
 				session.PaymentPollingActive = false
 				session.PaymentCheckUntil = time.Time{}
 				setSession(chatID, session)
@@ -240,25 +235,30 @@ func runPaymentPoller(bot *tgbotapi.BotAPI, chatID int64, token string, clickTim
 	}
 }
 
-// --- Асинхронная тасовка и чтение ---
+// --- Анимация тасовки и визуальный расклад ---
 
 func startShuffleAndReading(bot *tgbotapi.BotAPI, chatID int64) {
 	session := getSession(chatID)
-	if session == nil {
-		return
-	}
+	if session == nil { return }
 
-	// Генерируем колоду
 	session.Deck = generateDeck()
 	session.Step = "shuffling"
 	setSession(chatID, session)
 
-	bot.Send(tgbotapi.NewMessage(chatID, "🌪️ Смешиваем энергии и тасуем колоду..."))
-	time.Sleep(1500 * time.Millisecond)
-	bot.Send(tgbotapi.NewMessage(chatID, "🎴 Карты наполняются вашим намерением..."))
-	time.Sleep(1500 * time.Millisecond)
+	// 1. Анимация тасовки через быструю правку одного сообщения
+	animMsg := tgbotapi.NewMessage(chatID, "🌪️ *Перемешиваем колоду...*")
+	animMsg.ParseMode = "Markdown"
+	sentMsg, _ := bot.Send(animMsg)
 
-	msg := tgbotapi.NewMessage(chatID, "✨ Колода готова! Чтобы сделать расклад максимально личным, предложите колоде выбрать момент.\n\nНажмите кнопку ниже, чтобы **срезать колоду** (это случайным образом разделит её и переместит верхнюю часть вниз).")
+	time.Sleep(1200 * time.Millisecond)
+	bot.Send(tgbotapi.NewEditMessageText(chatID, sentMsg.MessageID, "🃏 *Карты выравниваются и заряжаются вашим намерением...*"))
+	
+	time.Sleep(1200 * time.Millisecond)
+	bot.Send(tgbotapi.NewEditMessageText(chatID, sentMsg.MessageID, "✨ *Колода готова к раскрытию тайн.*"))
+	
+	time.Sleep(800 * time.Millisecond)
+
+	msg := tgbotapi.NewMessage(chatID, "Чтобы сделать расклад максимально личным, предложите колоде выбрать момент.\n\nНажмите кнопку ниже, чтобы **срезать колоду** (это случайным образом разделит её и переместит верхнюю часть вниз).")
 	msg.ParseMode = "Markdown"
 	msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(
@@ -304,7 +304,7 @@ func main() {
 
 		session := getSession(chatID)
 
-		// 1. Обработка команд и кнопки старта
+		// 1. Старт
 		if (update.Message != nil && update.Message.IsCommand()) || text == "🔮 Новый расклад" {
 			clearSession(chatID)
 			newSession := &UserSession{Step: "awaiting_question"}
@@ -316,17 +316,14 @@ func main() {
 			continue
 		}
 
-		// 2. Ожидание вопроса
+		// 2. Вопрос
 		if session != nil && session.Step == "awaiting_question" {
-			if text == "" {
-				continue
-			}
+			if text == "" { continue }
 			session.Question = text
 			session.Step = "awaiting_spread"
 			setSession(chatID, session)
 
 			msg := tgbotapi.NewMessage(chatID, "Отличный вопрос! Выберите тип расклада:")
-
 			var buttons []tgbotapi.InlineKeyboardButton
 			for _, sp := range availableSpreads {
 				buttons = append(buttons, tgbotapi.NewInlineKeyboardButtonData(
@@ -334,7 +331,6 @@ func main() {
 					fmt.Sprintf("select_spread|%s|%d", sp.Name, sp.Price),
 				))
 			}
-
 			keyboard := tgbotapi.NewInlineKeyboardMarkup()
 			for i := 0; i < len(buttons); i += 2 {
 				if i+1 < len(buttons) {
@@ -348,7 +344,7 @@ func main() {
 			continue
 		}
 
-		// 3. Обработка выбора расклада (Callback)
+		// 3. Выбор расклада
 		if update.CallbackQuery != nil && strings.HasPrefix(text, "select_spread|") {
 			parts := strings.Split(text, "|")
 			if len(parts) == 3 {
@@ -358,8 +354,6 @@ func main() {
 				session.PaymentCreatedAt = time.Now()
 				session.Step = "awaiting_payment"
 				setSession(chatID, session)
-
-				// Имитируем задержку подтверждения платежа
 				simulatePaymentDelay(chatID)
 
 				callback := tgbotapi.NewCallback(update.CallbackQuery.ID, "Расклад выбран")
@@ -370,39 +364,31 @@ func main() {
 					session.SelectedSpread, session.SpreadPrice, session.PaymentToken,
 				))
 				msg.ParseMode = "Markdown"
-
-				keyboard := tgbotapi.NewInlineKeyboardMarkup(
+				msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
 					tgbotapi.NewInlineKeyboardRow(
 						tgbotapi.NewInlineKeyboardButtonData("✅ Я оплатил", "check_payment"),
 					),
 				)
-				msg.ReplyMarkup = keyboard
 				bot.Send(msg)
 			}
 			continue
 		}
 
-		// 4. Проверка оплаты и запуск поллера
+		// 4. Проверка оплаты
 		if update.CallbackQuery != nil && text == "check_payment" {
-			// Проверяем срок жизни токена (1 час)
 			if time.Since(session.PaymentCreatedAt) > PaymentTokenLifetime {
 				callback := tgbotapi.NewCallback(update.CallbackQuery.ID, "Токен истёк")
 				bot.Request(callback)
-
-				msg := tgbotapi.NewMessage(chatID, "⏳ Токен платежа истёк (прошёл более 1 часа). Начните заново с /start")
+				bot.Send(tgbotapi.NewMessage(chatID, "⏳ Токен платежа истёк (прошёл более 1 часа). Начните заново с /start"))
 				clearSession(chatID)
-				bot.Send(msg)
 				continue
 			}
-
-			// Проверяем, не запущен ли уже поллер
 			if session.PaymentPollingActive {
 				callback := tgbotapi.NewCallback(update.CallbackQuery.ID, "Оплата уже проверяется")
 				bot.Request(callback)
 				continue
 			}
 
-			// Запускаем поллер
 			session.PaymentClickTime = time.Now()
 			session.PaymentCheckUntil = time.Now().Add(PaymentCheckTimeout)
 			session.PaymentPollingActive = true
@@ -410,43 +396,58 @@ func main() {
 
 			callback := tgbotapi.NewCallback(update.CallbackQuery.ID, "Проверяем оплату...")
 			bot.Request(callback)
-
-			msg := tgbotapi.NewMessage(chatID, "⏳ Проверяем оплату в системе... Это может занять до 10 минут.\n\n💡 Не закрывайте чат, мы сообщим о результате.")
-			bot.Send(msg)
-
+			bot.Send(tgbotapi.NewMessage(chatID, "⏳ Проверяем оплату в системе... Это может занять до 10 минут.\n\n💡 Не закрывайте чат, мы сообщим о результате."))
 			go runPaymentPoller(bot, chatID, session.PaymentToken, session.PaymentClickTime)
 			continue
 		}
 
-		// 5. Срез колоды
+		// 5. Срез колоды и ВИЗУАЛЬНЫЙ РАСКЛАД
 		if update.CallbackQuery != nil && text == "cut_deck" {
 			callback := tgbotapi.NewCallback(update.CallbackQuery.ID, "Колода срезана!")
 			bot.Request(callback)
 
-			// Сохраняем данные перед очисткой сессии
 			selectedSpread := session.SelectedSpread
 			question := session.Question
 			deck := session.Deck
 
-			// Генерируем случайную точку среза от 0 до 77
 			cutIndex := mrand.Intn(len(deck))
-
-			// "Срезаем": верхняя часть уходит вниз
 			deck = append(deck[cutIndex:], deck[:cutIndex]...)
 
-			bot.Send(tgbotapi.NewMessage(chatID, "🔮 Выкладываем карты и запрашиваем мудрость ИИ... Это займет несколько секунд."))
+			bot.Send(tgbotapi.NewMessage(chatID, "🔮 Выкладываем карты на стол..."))
 
-			// Определяем количество карт для расклада
 			cardCount := getCardCount(selectedSpread)
-
-			// Берем верхние карты из "срезанной" колоды
 			var selectedCards []CardRequest
+			
+			// Формируем медиа-группу для визуального отображения карт (максимум 10 в Telegram)
+			var mediaGroup []interface{}
+			
 			for i := 0; i < cardCount && i < len(deck); i++ {
+				card := deck[i]
 				selectedCards = append(selectedCards, CardRequest{
-					Name:       deck[i].Name,
-					IsReversed: deck[i].IsReversed,
+					Name:       card.Name,
+					IsReversed: card.IsReversed,
 				})
+
+				// Создаем элемент медиа-группы
+				reversedIcon := ""
+				if card.IsReversed {
+					reversedIcon = " 🔄 (Перевёрнутая)"
+				}
+				
+				photo := tgbotapi.NewInputMediaPhoto(tgbotapi.FileURL(getCardImageURL(card.Name)))
+				// Caption поддерживает Markdown, но в MediaGroup он ограничен. Используем простой текст.
+				photo.Caption = fmt.Sprintf("Позиция %d\n%s%s", i+1, card.Name, reversedIcon)
+				photo.ParseMode = "Markdown"
+				
+				mediaGroup = append(mediaGroup, photo)
 			}
+
+			// Отправляем карты альбомом (это выглядит как настоящий расклад на столе)
+			if len(mediaGroup) > 0 {
+				bot.Send(tgbotapi.NewMediaGroup(chatID, mediaGroup))
+			}
+
+			bot.Send(tgbotapi.NewMessage(chatID, "⏳ Запрашиваем мудрость ИИ для интерпретации этого расклада..."))
 
 			// Вызов бэкенда
 			reqBody := ReadSpreadRequest{
@@ -455,11 +456,10 @@ func main() {
 				Cards:    selectedCards,
 			}
 			jsonData, _ := json.Marshal(reqBody)
-
 			client := &http.Client{Timeout: 30 * time.Second}
 			resp, err := client.Post(backendURL+"/api/read-spread", "application/json", bytes.NewBuffer(jsonData))
-
-			clearSession(chatID) // Очищаем сессию после завершения
+			
+			clearSession(chatID)
 
 			if err != nil || resp == nil || resp.StatusCode != http.StatusOK {
 				errMsg := "❌ Произошла ошибка при обращении к оракулу. Попробуйте позже."
@@ -476,7 +476,6 @@ func main() {
 				continue
 			}
 
-			// Формируем финальное сообщение
 			answerText := fmt.Sprintf("🔮 **Расклад: %s**\n📜 **Вопрос:** _%s_\n\n%s\n\n_Хотите задать еще один вопрос? Нажмите /start_",
 				selectedSpread, question, result.Interpretation)
 
@@ -486,15 +485,14 @@ func main() {
 			continue
 		}
 
-		// Fallback для нераспознанных сообщений
+		// Fallback
 		if session == nil {
 			msg := tgbotapi.NewMessage(chatID, "Пожалуйста, используйте команду /start или кнопку '🔮 Новый расклад' для начала.")
-			keyboard := tgbotapi.NewReplyKeyboard(
+			msg.ReplyMarkup = tgbotapi.NewReplyKeyboard(
 				tgbotapi.NewKeyboardButtonRow(
 					tgbotapi.NewKeyboardButton("🔮 Новый расклад"),
 				),
 			)
-			msg.ReplyMarkup = keyboard
 			bot.Send(msg)
 		}
 	}
