@@ -58,7 +58,8 @@ var (
 	sessions      = make(map[int64]*UserSession)
 	sessionsMutex sync.RWMutex
 	botToken      = getEnv("TELEGRAM_BOT_TOKEN", "")
-	backendURL    = getEnv("BACKEND_URL", "http://127.0.0.1:18080") // Используем localhost из-за network_mode: host
+	// Используем 127.0.0.1, так как бот работает в network_mode: "host"
+	backendURL = getEnv("BACKEND_URL", "http://127.0.0.1:18080")
 
 	paymentSimDelay = make(map[int64]time.Duration)
 	paymentSimMutex sync.RWMutex
@@ -72,6 +73,7 @@ const (
 	PaymentPollInterval  = 5 * time.Second
 )
 
+// Полная колода из 78 карт Таро
 var standardDeck = []string{
 	"Шут", "Маг", "Верховная Жрица", "Императрица", "Император", "Иерофант", "Влюбленные", "Колесница", "Сила", "Отшельник",
 	"Колесо Фортуны", "Справедливость", "Повешенный", "Смерть", "Умеренность", "Дьявол", "Башня", "Звезда", "Луна", "Солнце",
@@ -87,13 +89,22 @@ type SpreadOption struct {
 	Price int
 }
 
+// Список раскладов на основе документа "Расклады_Таро.docx"
 var availableSpreads = []SpreadOption{
 	{"Одна карта (Карта дня)", 50},
 	{"Да или Нет (3 карты)", 100},
 	{"Три карты (Триплет)", 150},
 	{"Крест (4 карты)", 200},
+	{"Слепое пятно (4 карты)", 200},
 	{"Пятикарточный расклад", 250},
+	{"Голос Ангела-Хранителя (4 карты)", 250},
+	{"Пирамида (6 карт)", 300},
+	{"Алхимик (6 карт)", 300},
+	{"Подкова (7 карт)", 300},
+	{"Звезда / Чакральный (7 карт)", 300},
+	{"Партнерство (7 карт)", 350},
 	{"Кельтский крест (10 карт)", 500},
+	{"Колесо года (12 карт)", 600},
 }
 
 // --- Вспомогательные функции ---
@@ -128,9 +139,10 @@ func generateDeck() []Card {
 	for i, name := range standardDeck {
 		deck[i] = Card{
 			Name:       name,
-			IsReversed: mrand.Float32() < 0.3,
+			IsReversed: mrand.Float32() < 0.3, // 30% шанс перевернутой карты
 		}
 	}
+	// Перемешиваем колоду (алгоритм Фишера-Йетса)
 	for i := len(deck) - 1; i > 0; i-- {
 		j := mrand.Intn(i + 1)
 		deck[i], deck[j] = deck[j], deck[i]
@@ -168,13 +180,49 @@ func checkPayment(chatID int64, clickTime time.Time) bool {
 
 func getCardCount(spread string) int {
 	s := strings.ToLower(spread)
-	if strings.Contains(s, "одна") { return 1 }
-	if strings.Contains(s, "да или нет") { return 3 }
-	if strings.Contains(s, "три") { return 3 }
-	if strings.Contains(s, "крест") && !strings.Contains(s, "кельтский") { return 4 }
-	if strings.Contains(s, "пятикарточн") { return 5 }
-	if strings.Contains(s, "кельтский") { return 10 }
-	return 3
+	if strings.Contains(s, "одна") {
+		return 1
+	}
+	if strings.Contains(s, "да или нет") {
+		return 3
+	}
+	if strings.Contains(s, "три") {
+		return 3
+	}
+	if strings.Contains(s, "крест") && !strings.Contains(s, "кельтский") {
+		return 4
+	}
+	if strings.Contains(s, "слепое пятно") {
+		return 4
+	}
+	if strings.Contains(s, "пятикарточн") {
+		return 5
+	}
+	if strings.Contains(s, "ангел") || strings.Contains(s, "голос") {
+		return 4
+	}
+	if strings.Contains(s, "пирамида") {
+		return 6
+	}
+	if strings.Contains(s, "алхимик") {
+		return 6
+	}
+	if strings.Contains(s, "подкова") {
+		return 7
+	}
+	if strings.Contains(s, "звезда") || strings.Contains(s, "чакр") {
+		return 7
+	}
+	if strings.Contains(s, "партнерство") || strings.Contains(s, "партнёрство") {
+		return 7
+	}
+	if strings.Contains(s, "кельтский") {
+		return 10
+	}
+	if strings.Contains(s, "колесо") {
+		return 12
+	}
+	return 3 // Значение по умолчанию
 }
 
 func getCardImageURL(cardName string) string {
@@ -246,10 +294,10 @@ func startShuffleAndReading(bot *tgbotapi.BotAPI, chatID int64) {
 
 	time.Sleep(1200 * time.Millisecond)
 	bot.Request(tgbotapi.NewEditMessageText(chatID, sentMsg.MessageID, "🃏 *Карты выравниваются и заряжаются вашим намерением...*"))
-	
+
 	time.Sleep(1200 * time.Millisecond)
 	bot.Request(tgbotapi.NewEditMessageText(chatID, sentMsg.MessageID, "✨ *Колода готова к раскрытию тайн.*"))
-	
+
 	time.Sleep(800 * time.Millisecond)
 
 	msg := tgbotapi.NewMessage(chatID, "Чтобы сделать расклад максимально личным, предложите колоде выбрать момент.\n\nНажмите кнопку ниже, чтобы **срезать колоду** (это случайным образом разделит её и переместит верхнюю часть вниз).")
@@ -270,7 +318,13 @@ func main() {
 		log.Fatal("TELEGRAM_BOT_TOKEN is not set")
 	}
 
-	bot, err := tgbotapi.NewBotAPI(botToken)
+	// Создаем HTTP-клиент с явным таймаутом 10 секунд для предотвращения зависаний
+	httpClient := &http.Client{
+		Timeout: 10 * time.Second,
+	}
+
+	// Инициализируем бота с кастомным HTTP-клиентом
+	bot, err := tgbotapi.NewBotAPIWithClient(botToken, tgbotapi.APIEndpoint, httpClient)
 	if err != nil {
 		log.Fatalf("Failed to create bot: %v", err)
 	}
@@ -314,7 +368,9 @@ func main() {
 
 		// 2. Вопрос
 		if session != nil && session.Step == "awaiting_question" {
-			if text == "" { continue }
+			if text == "" {
+				continue
+			}
 			session.Question = text
 			session.Step = "awaiting_spread"
 			setSession(chatID, session)
@@ -419,7 +475,7 @@ func main() {
 			cardCount := getCardCount(selectedSpread)
 			var selectedCards []CardRequest
 			var mediaGroup []interface{}
-			
+
 			for i := 0; i < cardCount && i < len(deck); i++ {
 				card := deck[i]
 				selectedCards = append(selectedCards, CardRequest{
@@ -428,7 +484,7 @@ func main() {
 				})
 
 				photo := tgbotapi.NewInputMediaPhoto(tgbotapi.FileURL(getCardImageURL(card.Name)))
-				
+
 				// КРИТИЧЕСКИ ВАЖНО: Telegram разрешает подпись (Caption) ТОЛЬКО для первого элемента в MediaGroup!
 				if i == 0 {
 					reversedIcon := ""
@@ -438,7 +494,7 @@ func main() {
 					photo.Caption = fmt.Sprintf("🔮 *Расклад: %s*\n\nПозиция %d: *%s*%s", selectedSpread, i+1, card.Name, reversedIcon)
 					photo.ParseMode = "Markdown"
 				}
-				
+
 				mediaGroup = append(mediaGroup, photo)
 			}
 
@@ -462,7 +518,7 @@ func main() {
 			jsonData, _ := json.Marshal(reqBody)
 			client := &http.Client{Timeout: 30 * time.Second}
 			resp, err := client.Post(backendURL+"/api/read-spread", "application/json", bytes.NewBuffer(jsonData))
-			
+
 			clearSession(chatID)
 
 			if err != nil || resp == nil || resp.StatusCode != http.StatusOK {
