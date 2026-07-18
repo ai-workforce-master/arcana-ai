@@ -64,7 +64,6 @@ var (
 	paymentSimDelay = make(map[string]time.Duration)
 	paymentSimMutex sync.RWMutex
 
-	// Глобальный HTTP-клиент с отключенной проверкой TLS (для обхода x509 ошибки)
 	insecureTransport = &http.Transport{
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 	}
@@ -243,7 +242,6 @@ func maxAPIRequest(method, path string, reqBody interface{}, respBody interface{
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", maxBotToken)
 
-	// Используем клиент с InsecureSkipVerify
 	resp, err := insecureClient.Do(req)
 	if err != nil {
 		return err
@@ -330,14 +328,14 @@ func handleUpdate(update map[string]interface{}) {
 	var chatID, text, callbackQueryID, callbackData string
 	var isCallback bool
 
+	// MAX API предоставляет chat_id в корне объекта update (как число float64 или строку)
+	if cid, ok := update["chat_id"].(float64); ok {
+		chatID = fmt.Sprintf("%.0f", cid)
+	} else if cid, ok := update["chat_id"].(string); ok {
+		chatID = cid
+	}
+
 	if msg, ok := payload["message"].(map[string]interface{}); ok {
-		if sender, ok := msg["sender"].(map[string]interface{}); ok {
-			if id, ok := sender["user_id"].(string); ok {
-				chatID = id
-			} else if id, ok := sender["user_id"].(float64); ok {
-				chatID = fmt.Sprintf("%.0f", id)
-			}
-		}
 		if body, ok := msg["body"].(map[string]interface{}); ok {
 			if t, ok := body["text"].(string); ok {
 				text = strings.TrimSpace(t)
@@ -345,18 +343,23 @@ func handleUpdate(update map[string]interface{}) {
 		}
 	} else if cb, ok := payload["message_callback"].(map[string]interface{}); ok {
 		isCallback = true
-		if id, ok := cb["id"].(string); ok {
+		if id, ok := cb["id"].(float64); ok {
+			callbackQueryID = fmt.Sprintf("%.0f", id)
+		} else if id, ok := cb["id"].(string); ok {
 			callbackQueryID = id
 		}
 		if data, ok := cb["payload"].(string); ok {
 			callbackData = data
 		}
-		if msg, ok := cb["message"].(map[string]interface{}); ok {
-			if sender, ok := msg["sender"].(map[string]interface{}); ok {
-				if id, ok := sender["user_id"].(string); ok {
-					chatID = id
-				} else if id, ok := sender["user_id"].(float64); ok {
-					chatID = fmt.Sprintf("%.0f", id)
+		// Fallback для chatID, если его нет в корне (маловероятно, но для надежности)
+		if chatID == "" {
+			if msg, ok := cb["message"].(map[string]interface{}); ok {
+				if sender, ok := msg["sender"].(map[string]interface{}); ok {
+					if uid, ok := sender["user_id"].(float64); ok {
+						chatID = fmt.Sprintf("%.0f", uid)
+					} else if uid, ok := sender["user_id"].(string); ok {
+						chatID = uid
+					}
 				}
 			}
 		}
@@ -522,7 +525,6 @@ func main() {
 		req.Header.Set("Authorization", maxBotToken)
 		req.Header.Set("Accept", "application/json")
 
-		// Используем клиент с InsecureSkipVerify для polling
 		resp, err := pollingClient.Do(req)
 		if err != nil {
 			log.Printf("Error polling updates: %v", err)
@@ -536,23 +538,19 @@ func main() {
 		log.Printf("Response status: %d", resp.StatusCode)
 		log.Printf("Response body (first 500 chars): %s", string(bodyBytes[:min(500, len(bodyBytes))]))
 
-		var updates []map[string]interface{}
-		
-		if err := json.Unmarshal(bodyBytes, &updates); err != nil {
-			var result struct {
-				Ok      bool                     `json:"ok"`
-				Results []map[string]interface{} `json:"result"`
-			}
-			if err2 := json.Unmarshal(bodyBytes, &result); err2 == nil && result.Ok {
-				updates = result.Results
-			} else {
-				log.Printf("Error decoding updates: %v", err)
-				time.Sleep(3 * time.Second)
-				continue
-			}
+		// ИСПРАВЛЕНО: Правильная структура ответа MAX API
+		var maxResponse struct {
+			Updates []map[string]interface{} `json:"updates"`
+			Marker  int64                    `json:"marker"`
 		}
 
-		for _, update := range updates {
+		if err := json.Unmarshal(bodyBytes, &maxResponse); err != nil {
+			log.Printf("Error decoding updates: %v", err)
+			time.Sleep(3 * time.Second)
+			continue
+		}
+
+		for _, update := range maxResponse.Updates {
 			go handleUpdate(update)
 		}
 		
