@@ -460,10 +460,6 @@ func handleUpdate(update map[string]interface{}) {
 
 	// Fallback
 	if session == nil {
-		buttons := [][]map[string]string{
-			{{"text": "🔮 Новый расклад", "callback_data": "🔮 Новый расклад"}}, // MAX может поддерживать callback_data как текст, или используйте обычное сообщение
-		}
-		// Если callback_data не поддерживает русский текст, лучше отправить обычное сообщение
 		maxSendText(chatID, "Пожалуйста, напишите /start или '🔮 Новый расклад' для начала.")
 	}
 }
