@@ -284,7 +284,7 @@ func runPaymentPoller(chatID string, token string, clickTime time.Time) {
 				remaining := PaymentTokenLifetime - time.Since(session.PaymentCreatedAt)
 				var msg string
 				if remaining > 0 {
-					msg = fmt.Sprintf("⏳ Оплата не подтверждена за 10 минут. Токен действителен еще %d мин. Нажмите '✅ Я оплатил' снова или начните с /start", int(remaining.Minutes()))
+					msg = fmt.Sprintf("⏳ Оплата не подтверждена за 10 минут. Токен действителен еще %d мин.", int(remaining.Minutes()))
 				} else {
 					msg = "⏳ Токен истёк. Начните заново с /start"
 					clearSession(chatID)
@@ -300,9 +300,7 @@ func runPaymentPoller(chatID string, token string, clickTime time.Time) {
 
 func startShuffleAndReading(chatID string) {
 	session := getSession(chatID)
-	if session == nil {
-		return
-	}
+	if session == nil { return }
 
 	session.Deck = generateDeck()
 	session.Step = "shuffling"
@@ -316,32 +314,39 @@ func startShuffleAndReading(chatID string) {
 	buttons := [][]map[string]string{
 		{{"text": "✂️ Срезать колоду", "payload": "cut_deck"}},
 	}
-	maxSendKeyboard(chatID, "✨ Колода готова! Нажмите кнопку ниже, чтобы срезать колоду (это случайным образом разделит её и переместит верхнюю часть вниз).", buttons)
+	maxSendKeyboard(chatID, "✨ Колода готова! Нажмите кнопку ниже, чтобы срезать колоду.", buttons)
 }
 
 func handleUpdate(update map[string]interface{}) {
-	payload, ok := update["payload"].(map[string]interface{})
-	if !ok {
-		return
-	}
-
 	var chatID, text, callbackQueryID, callbackData string
 	var isCallback bool
 
-	// MAX API предоставляет chat_id в корне объекта update (как число float64 или строку)
-	if cid, ok := update["chat_id"].(float64); ok {
-		chatID = fmt.Sprintf("%.0f", cid)
-	} else if cid, ok := update["chat_id"].(string); ok {
-		chatID = cid
-	}
+	// MAX API структура: update содержит "message" или "message_callback"
+	if msg, ok := update["message"].(map[string]interface{}); ok {
+		// Извлекаем chat_id из sender или recipient
+		if sender, ok := msg["sender"].(map[string]interface{}); ok {
+			if uid, ok := sender["user_id"].(float64); ok {
+				chatID = fmt.Sprintf("%.0f", uid)
+			} else if uid, ok := sender["user_id"].(string); ok {
+				chatID = uid
+			}
+		}
+		if chatID == "" {
+			if recipient, ok := msg["recipient"].(map[string]interface{}); ok {
+				if uid, ok := recipient["chat_id"].(float64); ok {
+					chatID = fmt.Sprintf("%.0f", uid)
+				} else if uid, ok := recipient["chat_id"].(string); ok {
+					chatID = uid
+				}
+			}
+		}
 
-	if msg, ok := payload["message"].(map[string]interface{}); ok {
 		if body, ok := msg["body"].(map[string]interface{}); ok {
 			if t, ok := body["text"].(string); ok {
 				text = strings.TrimSpace(t)
 			}
 		}
-	} else if cb, ok := payload["message_callback"].(map[string]interface{}); ok {
+	} else if cb, ok := update["message_callback"].(map[string]interface{}); ok {
 		isCallback = true
 		if id, ok := cb["id"].(float64); ok {
 			callbackQueryID = fmt.Sprintf("%.0f", id)
@@ -351,15 +356,13 @@ func handleUpdate(update map[string]interface{}) {
 		if data, ok := cb["payload"].(string); ok {
 			callbackData = data
 		}
-		// Fallback для chatID, если его нет в корне (маловероятно, но для надежности)
-		if chatID == "" {
-			if msg, ok := cb["message"].(map[string]interface{}); ok {
-				if sender, ok := msg["sender"].(map[string]interface{}); ok {
-					if uid, ok := sender["user_id"].(float64); ok {
-						chatID = fmt.Sprintf("%.0f", uid)
-					} else if uid, ok := sender["user_id"].(string); ok {
-						chatID = uid
-					}
+		// Извлекаем chat_id для callback
+		if msg, ok := cb["message"].(map[string]interface{}); ok {
+			if sender, ok := msg["sender"].(map[string]interface{}); ok {
+				if uid, ok := sender["user_id"].(float64); ok {
+					chatID = fmt.Sprintf("%.0f", uid)
+				} else if uid, ok := sender["user_id"].(string); ok {
+					chatID = uid
 				}
 			}
 		}
@@ -408,12 +411,8 @@ func handleUpdate(update map[string]interface{}) {
 			simulatePaymentDelay(chatID)
 
 			maxAnswerCallback(callbackQueryID, "Расклад выбран")
-
 			msg := fmt.Sprintf("Вы выбрали: *%s*\n💰 Стоимость: *%d₽*\n\n📋 Номер платежа: %s\n⏰ Токен действителен 1 час\n\nПереведите сумму на карту: 2200 0000 0000 0000\n\nПосле перевода нажмите кнопку ниже.", session.SelectedSpread, session.SpreadPrice, session.PaymentToken)
-
-			buttons := [][]map[string]string{
-				{{"text": "✅ Я оплатил", "payload": "check_payment"}},
-			}
+			buttons := [][]map[string]string{{{"text": "✅ Я оплатил", "payload": "check_payment"}}}
 			maxSendKeyboard(chatID, msg, buttons)
 		}
 		return
@@ -437,7 +436,7 @@ func handleUpdate(update map[string]interface{}) {
 		setSession(chatID, session)
 
 		maxAnswerCallback(callbackQueryID, "Проверяем оплату...")
-		maxSendText(chatID, "⏳ Проверяем оплату в системе... Это займет несколько секунд.")
+		maxSendText(chatID, "⏳ Проверяем оплату в системе...")
 		go runPaymentPoller(chatID, session.PaymentToken, session.PaymentClickTime)
 		return
 	}
@@ -462,16 +461,13 @@ func handleUpdate(update map[string]interface{}) {
 		for i := 0; i < cardCount && i < len(deck); i++ {
 			card := deck[i]
 			selectedCards = append(selectedCards, CardRequest{Name: card.Name, IsReversed: card.IsReversed})
-
 			reversedStr := ""
-			if card.IsReversed {
-				reversedStr = " 🔄 (Перевёрнутая)"
-			}
+			if card.IsReversed { reversedStr = " 🔄 (Перевёрнутая)" }
 			cardTexts = append(cardTexts, fmt.Sprintf("🃏 Позиция %d: %s%s", i+1, card.Name, reversedStr))
 		}
 
 		maxSendText(chatID, "Выпавшие карты:\n\n"+strings.Join(cardTexts, "\n"))
-		maxSendText(chatID, "⏳ Запрашиваем мудрость ИИ для интерпретации этого расклада...")
+		maxSendText(chatID, "⏳ Запрашиваем мудрость ИИ...")
 
 		reqBody := ReadSpreadRequest{Question: question, Spread: selectedSpread, Cards: selectedCards}
 		jsonData, _ := json.Marshal(reqBody)
@@ -480,7 +476,7 @@ func handleUpdate(update map[string]interface{}) {
 		clearSession(chatID)
 
 		if err != nil || resp == nil || resp.StatusCode != http.StatusOK {
-			maxSendText(chatID, "❌ Произошла ошибка при обращении к оракулу. Попробуйте позже.")
+			maxSendText(chatID, "❌ Ошибка при обращении к оракулу.")
 			return
 		}
 
@@ -495,16 +491,13 @@ func handleUpdate(update map[string]interface{}) {
 		return
 	}
 
-	// Fallback
 	if session == nil {
 		maxSendText(chatID, "Пожалуйста, напишите /start или '🔮 Новый расклад' для начала.")
 	}
 }
 
 func min(a, b int) int {
-	if a < b {
-		return a
-	}
+	if a < b { return a }
 	return b
 }
 
@@ -519,24 +512,19 @@ func main() {
 
 	for {
 		url := fmt.Sprintf("%s/updates", maxAPIBaseURL)
-		log.Printf("Polling URL: %s", url)
-
 		req, _ := http.NewRequest("GET", url, nil)
 		req.Header.Set("Authorization", maxBotToken)
 		req.Header.Set("Accept", "application/json")
 
 		resp, err := pollingClient.Do(req)
 		if err != nil {
-			log.Printf("Error polling updates: %v", err)
+			log.Printf("Error polling: %v", err)
 			time.Sleep(3 * time.Second)
 			continue
 		}
 
 		bodyBytes, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
-
-		log.Printf("Response status: %d", resp.StatusCode)
-		log.Printf("Response body (first 500 chars): %s", string(bodyBytes[:min(500, len(bodyBytes))]))
 
 		// ИСПРАВЛЕНО: Правильная структура ответа MAX API
 		var maxResponse struct {
