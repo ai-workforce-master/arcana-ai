@@ -57,7 +57,8 @@ var (
 	sessions      = make(map[string]*UserSession)
 	sessionsMutex sync.RWMutex
 	maxBotToken   = getEnv("MAX_BOT_TOKEN", "")
-	maxAPIBaseURL = getEnv("MAX_API_BASE_URL", "https://api.max.ru/v1/bot")
+	// ИСПРАВЛЕНО: правильный домен согласно документации MAX
+	maxAPIBaseURL = getEnv("MAX_API_BASE_URL", "https://platform-api2.max.ru")
 	backendURL    = getEnv("BACKEND_URL", "http://backend:8080")
 
 	paymentSimDelay = make(map[string]time.Duration)
@@ -163,48 +164,20 @@ func checkPayment(chatID string, clickTime time.Time) bool {
 
 func getCardCount(spread string) int {
 	s := strings.ToLower(spread)
-	if strings.Contains(s, "одна") {
-		return 1
-	}
-	if strings.Contains(s, "да или нет") {
-		return 3
-	}
-	if strings.Contains(s, "три") {
-		return 3
-	}
-	if strings.Contains(s, "крест") && !strings.Contains(s, "кельтский") {
-		return 4
-	}
-	if strings.Contains(s, "слепое пятно") {
-		return 4
-	}
-	if strings.Contains(s, "пятикарточн") {
-		return 5
-	}
-	if strings.Contains(s, "ангел") || strings.Contains(s, "голос") {
-		return 4
-	}
-	if strings.Contains(s, "пирамида") {
-		return 6
-	}
-	if strings.Contains(s, "алхимик") {
-		return 6
-	}
-	if strings.Contains(s, "подкова") {
-		return 7
-	}
-	if strings.Contains(s, "звезда") || strings.Contains(s, "чакр") {
-		return 7
-	}
-	if strings.Contains(s, "партнерство") || strings.Contains(s, "партнёрство") {
-		return 7
-	}
-	if strings.Contains(s, "кельтский") {
-		return 10
-	}
-	if strings.Contains(s, "колесо") {
-		return 12
-	}
+	if strings.Contains(s, "одна") { return 1 }
+	if strings.Contains(s, "да или нет") { return 3 }
+	if strings.Contains(s, "три") { return 3 }
+	if strings.Contains(s, "крест") && !strings.Contains(s, "кельтский") { return 4 }
+	if strings.Contains(s, "слепое пятно") { return 4 }
+	if strings.Contains(s, "пятикарточн") { return 5 }
+	if strings.Contains(s, "ангел") || strings.Contains(s, "голос") { return 4 }
+	if strings.Contains(s, "пирамида") { return 6 }
+	if strings.Contains(s, "алхимик") { return 6 }
+	if strings.Contains(s, "подкова") { return 7 }
+	if strings.Contains(s, "звезда") || strings.Contains(s, "чакр") { return 7 }
+	if strings.Contains(s, "партнерство") || strings.Contains(s, "партнёрство") { return 7 }
+	if strings.Contains(s, "кельтский") { return 10 }
+	if strings.Contains(s, "колесо") { return 12 }
 	return 3
 }
 
@@ -214,10 +187,15 @@ type maxMessageRequest struct {
 	ChatID      string        `json:"chat_id"`
 	Text        string        `json:"text,omitempty"`
 	Attachments []interface{} `json:"attachments,omitempty"`
+	Format      string        `json:"format,omitempty"` // "markdown" или "html"
 }
 
 func maxSendText(chatID, text string) error {
-	reqBody := maxMessageRequest{ChatID: chatID, Text: text}
+	reqBody := maxMessageRequest{
+		ChatID: chatID, 
+		Text:   text,
+		Format: "markdown",
+	}
 	return maxAPIRequest("POST", "/messages", reqBody, nil)
 }
 
@@ -230,16 +208,23 @@ func maxSendKeyboard(chatID, text string, buttons [][]map[string]string) error {
 			},
 		},
 	}
-	reqBody := maxMessageRequest{ChatID: chatID, Text: text, Attachments: attachments}
+	reqBody := maxMessageRequest{
+		ChatID:      chatID, 
+		Text:        text, 
+		Attachments: attachments,
+		Format:      "markdown",
+	}
 	return maxAPIRequest("POST", "/messages", reqBody, nil)
 }
 
 func maxAnswerCallback(callbackQueryID, text string) error {
+	// В MAX API ответ на callback может отличаться, но пока оставим заглушку или стандартный формат
+	// Если MAX требует другой эндпоинт, мы это увидим в логах
 	reqBody := map[string]string{
 		"callback_query_id": callbackQueryID,
 		"text":              text,
 	}
-	return maxAPIRequest("POST", "/callback_answer", reqBody, nil)
+	return maxAPIRequest("POST", "/answer_callback", reqBody, nil)
 }
 
 func maxAPIRequest(method, path string, reqBody interface{}, respBody interface{}) error {
@@ -264,7 +249,8 @@ func maxAPIRequest(method, path string, reqBody interface{}, respBody interface{
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("MAX API error: status %d", resp.StatusCode)
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("MAX API error: status %d, body: %s", resp.StatusCode, string(bodyBytes))
 	}
 
 	if respBody != nil {
@@ -328,12 +314,13 @@ func startShuffleAndReading(chatID string) {
 	time.Sleep(1500 * time.Millisecond)
 
 	buttons := [][]map[string]string{
-		{{"text": "✂️ Срезать колоду", "callback_data": "cut_deck"}},
+		{{"text": "✂️ Срезать колоду", "payload": "cut_deck"}}, // В MAX используется "payload" для callback
 	}
 	maxSendKeyboard(chatID, "✨ Колода готова! Нажмите кнопку ниже, чтобы срезать колоду (это случайным образом разделит её и переместит верхнюю часть вниз).", buttons)
 }
 
 func handleUpdate(update map[string]interface{}) {
+	// Структура MAX update: {"update_type": "...", "payload": {...}}
 	payload, ok := update["payload"].(map[string]interface{})
 	if !ok {
 		return
@@ -342,10 +329,13 @@ func handleUpdate(update map[string]interface{}) {
 	var chatID, text, callbackQueryID, callbackData string
 	var isCallback bool
 
+	// MAX может присылать 'message' или 'message_callback'
 	if msg, ok := payload["message"].(map[string]interface{}); ok {
 		if sender, ok := msg["sender"].(map[string]interface{}); ok {
 			if id, ok := sender["user_id"].(string); ok {
 				chatID = id
+			} else if id, ok := sender["user_id"].(float64); ok { // Иногда приходит как число
+				chatID = fmt.Sprintf("%.0f", id)
 			}
 		}
 		if body, ok := msg["body"].(map[string]interface{}); ok {
@@ -353,18 +343,20 @@ func handleUpdate(update map[string]interface{}) {
 				text = strings.TrimSpace(t)
 			}
 		}
-	} else if cb, ok := payload["callback_query"].(map[string]interface{}); ok {
+	} else if cb, ok := payload["message_callback"].(map[string]interface{}); ok { // MAX использует message_callback
 		isCallback = true
 		if id, ok := cb["id"].(string); ok {
 			callbackQueryID = id
 		}
-		if data, ok := cb["data"].(string); ok {
+		if data, ok := cb["payload"].(string); ok { // В MAX данные кнопки лежат в "payload"
 			callbackData = data
 		}
 		if msg, ok := cb["message"].(map[string]interface{}); ok {
 			if sender, ok := msg["sender"].(map[string]interface{}); ok {
 				if id, ok := sender["user_id"].(string); ok {
 					chatID = id
+				} else if id, ok := sender["user_id"].(float64); ok {
+					chatID = fmt.Sprintf("%.0f", id)
 				}
 			}
 		}
@@ -393,7 +385,7 @@ func handleUpdate(update map[string]interface{}) {
 		var buttons [][]map[string]string
 		for _, sp := range availableSpreads {
 			buttons = append(buttons, []map[string]string{
-				{"text": fmt.Sprintf("%s — %d₽", sp.Name, sp.Price), "callback_data": fmt.Sprintf("select_spread|%s|%d", sp.Name, sp.Price)},
+				{"text": fmt.Sprintf("%s — %d₽", sp.Name, sp.Price), "payload": fmt.Sprintf("select_spread|%s|%d", sp.Name, sp.Price)},
 			})
 		}
 		maxSendKeyboard(chatID, "Отличный вопрос! Выберите тип расклада:", buttons)
@@ -412,12 +404,13 @@ func handleUpdate(update map[string]interface{}) {
 			setSession(chatID, session)
 			simulatePaymentDelay(chatID)
 
+			// В MAX ответ на callback может быть другим, но попробуем стандартный
 			maxAnswerCallback(callbackQueryID, "Расклад выбран")
 
 			msg := fmt.Sprintf("Вы выбрали: *%s*\n💰 Стоимость: *%d₽*\n\n📋 Номер платежа: %s\n⏰ Токен действителен 1 час\n\nПереведите сумму на карту: 2200 0000 0000 0000\n\nПосле перевода нажмите кнопку ниже.", session.SelectedSpread, session.SpreadPrice, session.PaymentToken)
 
 			buttons := [][]map[string]string{
-				{{"text": "✅ Я оплатил", "callback_data": "check_payment"}},
+				{{"text": "✅ Я оплатил", "payload": "check_payment"}},
 			}
 			maxSendKeyboard(chatID, msg, buttons)
 		}
@@ -525,7 +518,8 @@ func main() {
 
 	// Long Polling цикл
 	for {
-		url := fmt.Sprintf("%s/updates?timeout=30", maxAPIBaseURL)
+		// В MAX API эндпоинт просто /updates
+		url := fmt.Sprintf("%s/updates", maxAPIBaseURL)
 		log.Printf("Polling URL: %s", url)
 
 		req, _ := http.NewRequest("GET", url, nil)
@@ -546,21 +540,30 @@ func main() {
 		log.Printf("Response status: %d", resp.StatusCode)
 		log.Printf("Response body (first 500 chars): %s", string(bodyBytes[:min(500, len(bodyBytes))]))
 
-		var result struct {
-			Ok      bool                     `json:"ok"`
-			Results []map[string]interface{} `json:"results"`
-		}
-
-		if err := json.Unmarshal(bodyBytes, &result); err != nil {
-			log.Printf("Error decoding updates: %v", err)
-			time.Sleep(3 * time.Second)
-			continue
-		}
-
-		if result.Ok {
-			for _, update := range result.Results {
-				go handleUpdate(update)
+		// MAX API может возвращать массив обновлений напрямую или объект с полем result
+		var updates []map[string]interface{}
+		
+		// Пробуем распарсить как массив
+		if err := json.Unmarshal(bodyBytes, &updates); err != nil {
+			// Если не массив, пробуем как объект {"ok": true, "result": [...]}
+			var result struct {
+				Ok      bool                     `json:"ok"`
+				Results []map[string]interface{} `json:"result"`
+			}
+			if err2 := json.Unmarshal(bodyBytes, &result); err2 == nil && result.Ok {
+				updates = result.Results
+			} else {
+				log.Printf("Error decoding updates: %v", err)
+				time.Sleep(3 * time.Second)
+				continue
 			}
 		}
+
+		for _, update := range updates {
+			go handleUpdate(update)
+		}
+		
+		// Небольшая пауза, чтобы не спамить запросами, если обновлений нет
+		time.Sleep(1 * time.Second)
 	}
 }
