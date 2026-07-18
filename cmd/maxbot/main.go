@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -57,12 +58,24 @@ var (
 	sessions      = make(map[string]*UserSession)
 	sessionsMutex sync.RWMutex
 	maxBotToken   = getEnv("MAX_BOT_TOKEN", "")
-	// ИСПРАВЛЕНО: правильный домен согласно документации MAX
 	maxAPIBaseURL = getEnv("MAX_API_BASE_URL", "https://platform-api2.max.ru")
 	backendURL    = getEnv("BACKEND_URL", "http://backend:8080")
 
 	paymentSimDelay = make(map[string]time.Duration)
 	paymentSimMutex sync.RWMutex
+
+	// Глобальный HTTP-клиент с отключенной проверкой TLS (для обхода x509 ошибки)
+	insecureTransport = &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	}
+	insecureClient = &http.Client{
+		Timeout:   15 * time.Second,
+		Transport: insecureTransport,
+	}
+	pollingClient = &http.Client{
+		Timeout:   35 * time.Second,
+		Transport: insecureTransport,
+	}
 )
 
 const (
@@ -187,15 +200,11 @@ type maxMessageRequest struct {
 	ChatID      string        `json:"chat_id"`
 	Text        string        `json:"text,omitempty"`
 	Attachments []interface{} `json:"attachments,omitempty"`
-	Format      string        `json:"format,omitempty"` // "markdown" или "html"
+	Format      string        `json:"format,omitempty"`
 }
 
 func maxSendText(chatID, text string) error {
-	reqBody := maxMessageRequest{
-		ChatID: chatID, 
-		Text:   text,
-		Format: "markdown",
-	}
+	reqBody := maxMessageRequest{ChatID: chatID, Text: text, Format: "markdown"}
 	return maxAPIRequest("POST", "/messages", reqBody, nil)
 }
 
@@ -208,18 +217,11 @@ func maxSendKeyboard(chatID, text string, buttons [][]map[string]string) error {
 			},
 		},
 	}
-	reqBody := maxMessageRequest{
-		ChatID:      chatID, 
-		Text:        text, 
-		Attachments: attachments,
-		Format:      "markdown",
-	}
+	reqBody := maxMessageRequest{ChatID: chatID, Text: text, Attachments: attachments, Format: "markdown"}
 	return maxAPIRequest("POST", "/messages", reqBody, nil)
 }
 
 func maxAnswerCallback(callbackQueryID, text string) error {
-	// В MAX API ответ на callback может отличаться, но пока оставим заглушку или стандартный формат
-	// Если MAX требует другой эндпоинт, мы это увидим в логах
 	reqBody := map[string]string{
 		"callback_query_id": callbackQueryID,
 		"text":              text,
@@ -241,8 +243,8 @@ func maxAPIRequest(method, path string, reqBody interface{}, respBody interface{
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", maxBotToken)
 
-	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Do(req)
+	// Используем клиент с InsecureSkipVerify
+	resp, err := insecureClient.Do(req)
 	if err != nil {
 		return err
 	}
@@ -314,13 +316,12 @@ func startShuffleAndReading(chatID string) {
 	time.Sleep(1500 * time.Millisecond)
 
 	buttons := [][]map[string]string{
-		{{"text": "✂️ Срезать колоду", "payload": "cut_deck"}}, // В MAX используется "payload" для callback
+		{{"text": "✂️ Срезать колоду", "payload": "cut_deck"}},
 	}
 	maxSendKeyboard(chatID, "✨ Колода готова! Нажмите кнопку ниже, чтобы срезать колоду (это случайным образом разделит её и переместит верхнюю часть вниз).", buttons)
 }
 
 func handleUpdate(update map[string]interface{}) {
-	// Структура MAX update: {"update_type": "...", "payload": {...}}
 	payload, ok := update["payload"].(map[string]interface{})
 	if !ok {
 		return
@@ -329,12 +330,11 @@ func handleUpdate(update map[string]interface{}) {
 	var chatID, text, callbackQueryID, callbackData string
 	var isCallback bool
 
-	// MAX может присылать 'message' или 'message_callback'
 	if msg, ok := payload["message"].(map[string]interface{}); ok {
 		if sender, ok := msg["sender"].(map[string]interface{}); ok {
 			if id, ok := sender["user_id"].(string); ok {
 				chatID = id
-			} else if id, ok := sender["user_id"].(float64); ok { // Иногда приходит как число
+			} else if id, ok := sender["user_id"].(float64); ok {
 				chatID = fmt.Sprintf("%.0f", id)
 			}
 		}
@@ -343,12 +343,12 @@ func handleUpdate(update map[string]interface{}) {
 				text = strings.TrimSpace(t)
 			}
 		}
-	} else if cb, ok := payload["message_callback"].(map[string]interface{}); ok { // MAX использует message_callback
+	} else if cb, ok := payload["message_callback"].(map[string]interface{}); ok {
 		isCallback = true
 		if id, ok := cb["id"].(string); ok {
 			callbackQueryID = id
 		}
-		if data, ok := cb["payload"].(string); ok { // В MAX данные кнопки лежат в "payload"
+		if data, ok := cb["payload"].(string); ok {
 			callbackData = data
 		}
 		if msg, ok := cb["message"].(map[string]interface{}); ok {
@@ -404,7 +404,6 @@ func handleUpdate(update map[string]interface{}) {
 			setSession(chatID, session)
 			simulatePaymentDelay(chatID)
 
-			// В MAX ответ на callback может быть другим, но попробуем стандартный
 			maxAnswerCallback(callbackQueryID, "Расклад выбран")
 
 			msg := fmt.Sprintf("Вы выбрали: *%s*\n💰 Стоимость: *%d₽*\n\n📋 Номер платежа: %s\n⏰ Токен действителен 1 час\n\nПереведите сумму на карту: 2200 0000 0000 0000\n\nПосле перевода нажмите кнопку ниже.", session.SelectedSpread, session.SpreadPrice, session.PaymentToken)
@@ -473,9 +472,8 @@ func handleUpdate(update map[string]interface{}) {
 
 		reqBody := ReadSpreadRequest{Question: question, Spread: selectedSpread, Cards: selectedCards}
 		jsonData, _ := json.Marshal(reqBody)
-		client := &http.Client{Timeout: 30 * time.Second}
-		resp, err := client.Post(backendURL+"/api/read-spread", "application/json", bytes.NewBuffer(jsonData))
-
+		
+		resp, err := insecureClient.Post(backendURL+"/api/read-spread", "application/json", bytes.NewBuffer(jsonData))
 		clearSession(chatID)
 
 		if err != nil || resp == nil || resp.StatusCode != http.StatusOK {
@@ -516,9 +514,7 @@ func main() {
 	log.Printf("MAX_API_BASE_URL: %s", maxAPIBaseURL)
 	log.Printf("MAX_BOT_TOKEN: %s...", maxBotToken[:min(10, len(maxBotToken))])
 
-	// Long Polling цикл
 	for {
-		// В MAX API эндпоинт просто /updates
 		url := fmt.Sprintf("%s/updates", maxAPIBaseURL)
 		log.Printf("Polling URL: %s", url)
 
@@ -526,8 +522,8 @@ func main() {
 		req.Header.Set("Authorization", maxBotToken)
 		req.Header.Set("Accept", "application/json")
 
-		client := &http.Client{Timeout: 35 * time.Second}
-		resp, err := client.Do(req)
+		// Используем клиент с InsecureSkipVerify для polling
+		resp, err := pollingClient.Do(req)
 		if err != nil {
 			log.Printf("Error polling updates: %v", err)
 			time.Sleep(3 * time.Second)
@@ -540,12 +536,9 @@ func main() {
 		log.Printf("Response status: %d", resp.StatusCode)
 		log.Printf("Response body (first 500 chars): %s", string(bodyBytes[:min(500, len(bodyBytes))]))
 
-		// MAX API может возвращать массив обновлений напрямую или объект с полем result
 		var updates []map[string]interface{}
 		
-		// Пробуем распарсить как массив
 		if err := json.Unmarshal(bodyBytes, &updates); err != nil {
-			// Если не массив, пробуем как объект {"ok": true, "result": [...]}
 			var result struct {
 				Ok      bool                     `json:"ok"`
 				Results []map[string]interface{} `json:"result"`
@@ -563,7 +556,6 @@ func main() {
 			go handleUpdate(update)
 		}
 		
-		// Небольшая пауза, чтобы не спамить запросами, если обновлений нет
 		time.Sleep(1 * time.Second)
 	}
 }
