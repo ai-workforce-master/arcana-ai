@@ -58,8 +58,7 @@ var (
 	sessions      = make(map[int64]*UserSession)
 	sessionsMutex sync.RWMutex
 	botToken      = getEnv("TELEGRAM_BOT_TOKEN", "")
-	// Используем 127.0.0.1, так как бот работает в network_mode: "host"
-	backendURL = getEnv("BACKEND_URL", "http://127.0.0.1:18080")
+	backendURL    = getEnv("BACKEND_URL", "http://127.0.0.1:18080")
 
 	paymentSimDelay = make(map[int64]time.Duration)
 	paymentSimMutex sync.RWMutex
@@ -73,7 +72,6 @@ const (
 	PaymentPollInterval  = 5 * time.Second
 )
 
-// Полная колода из 78 карт Таро
 var standardDeck = []string{
 	"Шут", "Маг", "Верховная Жрица", "Императрица", "Император", "Иерофант", "Влюбленные", "Колесница", "Сила", "Отшельник",
 	"Колесо Фортуны", "Справедливость", "Повешенный", "Смерть", "Умеренность", "Дьявол", "Башня", "Звезда", "Луна", "Солнце",
@@ -89,7 +87,6 @@ type SpreadOption struct {
 	Price int
 }
 
-// Список раскладов на основе документа "Расклады_Таро.docx"
 var availableSpreads = []SpreadOption{
 	{"Одна карта (Карта дня)", 50},
 	{"Да или Нет (3 карты)", 100},
@@ -139,10 +136,9 @@ func generateDeck() []Card {
 	for i, name := range standardDeck {
 		deck[i] = Card{
 			Name:       name,
-			IsReversed: mrand.Float32() < 0.3, // 30% шанс перевернутой карты
+			IsReversed: mrand.Float32() < 0.3,
 		}
 	}
-	// Перемешиваем колоду (алгоритм Фишера-Йетса)
 	for i := len(deck) - 1; i > 0; i-- {
 		j := mrand.Intn(i + 1)
 		deck[i], deck[j] = deck[j], deck[i]
@@ -180,49 +176,21 @@ func checkPayment(chatID int64, clickTime time.Time) bool {
 
 func getCardCount(spread string) int {
 	s := strings.ToLower(spread)
-	if strings.Contains(s, "одна") {
-		return 1
-	}
-	if strings.Contains(s, "да или нет") {
-		return 3
-	}
-	if strings.Contains(s, "три") {
-		return 3
-	}
-	if strings.Contains(s, "крест") && !strings.Contains(s, "кельтский") {
-		return 4
-	}
-	if strings.Contains(s, "слепое пятно") {
-		return 4
-	}
-	if strings.Contains(s, "пятикарточн") {
-		return 5
-	}
-	if strings.Contains(s, "ангел") || strings.Contains(s, "голос") {
-		return 4
-	}
-	if strings.Contains(s, "пирамида") {
-		return 6
-	}
-	if strings.Contains(s, "алхимик") {
-		return 6
-	}
-	if strings.Contains(s, "подкова") {
-		return 7
-	}
-	if strings.Contains(s, "звезда") || strings.Contains(s, "чакр") {
-		return 7
-	}
-	if strings.Contains(s, "партнерство") || strings.Contains(s, "партнёрство") {
-		return 7
-	}
-	if strings.Contains(s, "кельтский") {
-		return 10
-	}
-	if strings.Contains(s, "колесо") {
-		return 12
-	}
-	return 3 // Значение по умолчанию
+	if strings.Contains(s, "одна") { return 1 }
+	if strings.Contains(s, "да или нет") { return 3 }
+	if strings.Contains(s, "три") { return 3 }
+	if strings.Contains(s, "крест") && !strings.Contains(s, "кельтский") { return 4 }
+	if strings.Contains(s, "слепое пятно") { return 4 }
+	if strings.Contains(s, "пятикарточн") { return 5 }
+	if strings.Contains(s, "ангел") || strings.Contains(s, "голос") { return 4 }
+	if strings.Contains(s, "пирамида") { return 6 }
+	if strings.Contains(s, "алхимик") { return 6 }
+	if strings.Contains(s, "подкова") { return 7 }
+	if strings.Contains(s, "звезда") || strings.Contains(s, "чакр") { return 7 }
+	if strings.Contains(s, "партнерство") || strings.Contains(s, "партнёрство") { return 7 }
+	if strings.Contains(s, "кельтский") { return 10 }
+	if strings.Contains(s, "колесо") { return 12 }
+	return 3
 }
 
 func getCardImageURL(cardName string) string {
@@ -244,11 +212,12 @@ func runPaymentPoller(bot *tgbotapi.BotAPI, chatID int64, token string, clickTim
 		case <-ticker.C:
 			session := getSession(chatID)
 			if session == nil || session.PaymentToken != token {
-				log.Printf("DEBUG: Poller stopped for chat %d (session nil or token mismatch)", chatID)
 				return
 			}
 			if checkPayment(chatID, clickTime) {
-				bot.Send(tgbotapi.NewMessage(chatID, "✅ Оплата подтверждена! Начинаем ритуал..."))
+				if _, err := bot.Send(tgbotapi.NewMessage(chatID, "✅ Оплата подтверждена! Начинаем ритуал...")); err != nil {
+					log.Printf("ERROR: Failed to send payment confirmed msg: %v", err)
+				}
 				go startShuffleAndReading(bot, chatID)
 				return
 			}
@@ -263,7 +232,9 @@ func runPaymentPoller(bot *tgbotapi.BotAPI, chatID int64, token string, clickTim
 					msg = "⏳ К сожалению, оплата не была подтверждена, и токен истёк. Начните заново с /start"
 					clearSession(chatID)
 				}
-				bot.Send(tgbotapi.NewMessage(chatID, msg))
+				if _, err := bot.Send(tgbotapi.NewMessage(chatID, msg)); err != nil {
+					log.Printf("ERROR: Failed to send timeout msg: %v", err)
+				}
 				session.PaymentPollingActive = false
 				session.PaymentCheckUntil = time.Time{}
 				setSession(chatID, session)
@@ -289,15 +260,23 @@ func startShuffleAndReading(bot *tgbotapi.BotAPI, chatID int64) {
 
 	animMsg := tgbotapi.NewMessage(chatID, "🌪️ *Перемешиваем колоду...*")
 	animMsg.ParseMode = "Markdown"
-	sentMsg, _ := bot.Send(animMsg)
+	sentMsg, err := bot.Send(animMsg)
+	if err != nil {
+		log.Printf("ERROR: Failed to send initial shuffle msg: %v", err)
+		return
+	}
 	log.Printf("DEBUG: Sent initial shuffle message, ID: %d", sentMsg.MessageID)
 
 	time.Sleep(1200 * time.Millisecond)
-	bot.Request(tgbotapi.NewEditMessageText(chatID, sentMsg.MessageID, "🃏 *Карты выравниваются и заряжаются вашим намерением...*"))
-
+	if err := bot.Request(tgbotapi.NewEditMessageText(chatID, sentMsg.MessageID, "🃏 *Карты выравниваются и заряжаются вашим намерением...*")); err != nil {
+		log.Printf("ERROR: Failed to edit shuffle msg (step 2): %v", err)
+	}
+	
 	time.Sleep(1200 * time.Millisecond)
-	bot.Request(tgbotapi.NewEditMessageText(chatID, sentMsg.MessageID, "✨ *Колода готова к раскрытию тайн.*"))
-
+	if err := bot.Request(tgbotapi.NewEditMessageText(chatID, sentMsg.MessageID, "✨ *Колода готова к раскрытию тайн.*")); err != nil {
+		log.Printf("ERROR: Failed to edit shuffle msg (step 3): %v", err)
+	}
+	
 	time.Sleep(800 * time.Millisecond)
 
 	msg := tgbotapi.NewMessage(chatID, "Чтобы сделать расклад максимально личным, предложите колоде выбрать момент.\n\nНажмите кнопку ниже, чтобы **срезать колоду** (это случайным образом разделит её и переместит верхнюю часть вниз).")
@@ -307,8 +286,11 @@ func startShuffleAndReading(bot *tgbotapi.BotAPI, chatID int64) {
 			tgbotapi.NewInlineKeyboardButtonData("✂️ Срезать колоду", "cut_deck"),
 		),
 	)
-	bot.Send(msg)
-	log.Printf("DEBUG: Shuffle animation complete, waiting for cut_deck")
+	if _, err := bot.Send(msg); err != nil {
+		log.Printf("ERROR: Failed to send cut deck prompt: %v", err)
+	} else {
+		log.Printf("DEBUG: Shuffle animation complete, waiting for cut_deck")
+	}
 }
 
 // --- Основная логика бота ---
@@ -318,13 +300,10 @@ func main() {
 		log.Fatal("TELEGRAM_BOT_TOKEN is not set")
 	}
 
-	// Создаем HTTP-клиент с таймаутом 120 секунд.
-	// Это должно быть БОЛЬШЕ, чем u.Timeout = 60, чтобы не обрывать long-polling Telegram.
 	httpClient := &http.Client{
 		Timeout: 120 * time.Second,
 	}
 
-	// Инициализируем бота с кастомным HTTP-клиентом
 	bot, err := tgbotapi.NewBotAPIWithClient(botToken, tgbotapi.APIEndpoint, httpClient)
 	if err != nil {
 		log.Fatalf("Failed to create bot: %v", err)
@@ -363,7 +342,9 @@ func main() {
 
 			msg := tgbotapi.NewMessage(chatID, "🔮 Добро пожаловать в Arcana AI!\n\nЗадайте ваш вопрос картам Таро (например: 'Что меня ждет в новом проекте?'):")
 			msg.ReplyMarkup = tgbotapi.NewRemoveKeyboard(true)
-			bot.Send(msg)
+			if _, err := bot.Send(msg); err != nil {
+				log.Printf("ERROR: Failed to send start message: %v", err)
+			}
 			continue
 		}
 
@@ -394,7 +375,13 @@ func main() {
 				}
 			}
 			msg.ReplyMarkup = keyboard
-			bot.Send(msg)
+			
+			// ВАЖНО: Теперь мы логируем ошибку отправки!
+			if _, err := bot.Send(msg); err != nil {
+				log.Printf("ERROR: Failed to send spread selection message to chat %d: %v", chatID, err)
+			} else {
+				log.Printf("DEBUG: Spread selection message sent successfully to chat %d", chatID)
+			}
 			continue
 		}
 
@@ -410,8 +397,9 @@ func main() {
 				setSession(chatID, session)
 				simulatePaymentDelay(chatID)
 
-				callback := tgbotapi.NewCallback(update.CallbackQuery.ID, "Расклад выбран")
-				bot.Request(callback)
+				if err := bot.Request(tgbotapi.NewCallback(update.CallbackQuery.ID, "Расклад выбран")); err != nil {
+					log.Printf("ERROR: Failed to answer callback query: %v", err)
+				}
 
 				msg := tgbotapi.NewMessage(chatID, fmt.Sprintf(
 					"Вы выбрали: *%s*\n💰 Стоимость: *%d₽*\n\n📋 *Номер платежа:* `%s`\n⏰ Токен действителен 1 час\n\nПереведите сумму на карту: `2200 0000 0000 0000` (Тинькофф)\n\nПосле перевода нажмите кнопку ниже.",
@@ -423,8 +411,11 @@ func main() {
 						tgbotapi.NewInlineKeyboardButtonData("✅ Я оплатил", "check_payment"),
 					),
 				)
-				bot.Send(msg)
-				log.Printf("DEBUG: Payment prompt sent for chat %d", chatID)
+				if _, err := bot.Send(msg); err != nil {
+					log.Printf("ERROR: Failed to send payment prompt: %v", err)
+				} else {
+					log.Printf("DEBUG: Payment prompt sent for chat %d", chatID)
+				}
 			}
 			continue
 		}
@@ -432,15 +423,13 @@ func main() {
 		// 4. Проверка оплаты
 		if update.CallbackQuery != nil && text == "check_payment" {
 			if time.Since(session.PaymentCreatedAt) > PaymentTokenLifetime {
-				callback := tgbotapi.NewCallback(update.CallbackQuery.ID, "Токен истёк")
-				bot.Request(callback)
+				bot.Request(tgbotapi.NewCallback(update.CallbackQuery.ID, "Токен истёк"))
 				bot.Send(tgbotapi.NewMessage(chatID, "⏳ Токен платежа истёк (прошёл более 1 часа). Начните заново с /start"))
 				clearSession(chatID)
 				continue
 			}
 			if session.PaymentPollingActive {
-				callback := tgbotapi.NewCallback(update.CallbackQuery.ID, "Оплата уже проверяется")
-				bot.Request(callback)
+				bot.Request(tgbotapi.NewCallback(update.CallbackQuery.ID, "Оплата уже проверяется"))
 				continue
 			}
 
@@ -449,8 +438,7 @@ func main() {
 			session.PaymentPollingActive = true
 			setSession(chatID, session)
 
-			callback := tgbotapi.NewCallback(update.CallbackQuery.ID, "Проверяем оплату...")
-			bot.Request(callback)
+			bot.Request(tgbotapi.NewCallback(update.CallbackQuery.ID, "Проверяем оплату..."))
 			bot.Send(tgbotapi.NewMessage(chatID, "⏳ Проверяем оплату в системе... Это займет несколько секунд.\n\n💡 Не закрывайте чат, мы сообщим о результате."))
 			log.Printf("DEBUG: Payment poller started for chat %d", chatID)
 			go runPaymentPoller(bot, chatID, session.PaymentToken, session.PaymentClickTime)
@@ -460,8 +448,7 @@ func main() {
 		// 5. Срез колоды и ВИЗУАЛЬНЫЙ РАСКЛАД
 		if update.CallbackQuery != nil && text == "cut_deck" {
 			log.Printf("DEBUG: cut_deck callback received for chat %d", chatID)
-			callback := tgbotapi.NewCallback(update.CallbackQuery.ID, "Колода срезана!")
-			bot.Request(callback)
+			bot.Request(tgbotapi.NewCallback(update.CallbackQuery.ID, "Колода срезана!"))
 
 			selectedSpread := session.SelectedSpread
 			question := session.Question
@@ -486,7 +473,6 @@ func main() {
 
 				photo := tgbotapi.NewInputMediaPhoto(tgbotapi.FileURL(getCardImageURL(card.Name)))
 
-				// КРИТИЧЕСКИ ВАЖНО: Telegram разрешает подпись (Caption) ТОЛЬКО для первого элемента в MediaGroup!
 				if i == 0 {
 					reversedIcon := ""
 					if card.IsReversed {
@@ -519,7 +505,7 @@ func main() {
 			jsonData, _ := json.Marshal(reqBody)
 			client := &http.Client{Timeout: 30 * time.Second}
 			resp, err := client.Post(backendURL+"/api/read-spread", "application/json", bytes.NewBuffer(jsonData))
-
+			
 			clearSession(chatID)
 
 			if err != nil || resp == nil || resp.StatusCode != http.StatusOK {
@@ -542,8 +528,11 @@ func main() {
 
 			answerMsg := tgbotapi.NewMessage(chatID, answerText)
 			answerMsg.ParseMode = "Markdown"
-			bot.Send(answerMsg)
-			log.Printf("DEBUG: Final interpretation sent for chat %d", chatID)
+			if _, err := bot.Send(answerMsg); err != nil {
+				log.Printf("ERROR: Failed to send final interpretation: %v", err)
+			} else {
+				log.Printf("DEBUG: Final interpretation sent for chat %d", chatID)
+			}
 			continue
 		}
 
