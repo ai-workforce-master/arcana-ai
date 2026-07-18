@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	mrand "math/rand"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -64,17 +65,25 @@ var (
 	paymentSimDelay = make(map[string]time.Duration)
 	paymentSimMutex sync.RWMutex
 
-	insecureTransport = &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	// Жесткие сетевые таймауты для предотвращения зависаний на уровне TCP/TLS
+	customTransport = &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   5 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		TLSHandshakeTimeout: 5 * time.Second,
+		TLSClientConfig:     &tls.Config{InsecureSkipVerify: true},
 	}
-	insecureClient = &http.Client{
-		Timeout:   15 * time.Second,
-		Transport: insecureTransport,
-	}
-	// СОКРАЩЕНО до 10 секунд для быстрой диагностики сетевых проблем
+
 	pollingClient = &http.Client{
 		Timeout:   10 * time.Second,
-		Transport: insecureTransport,
+		Transport: customTransport,
+	}
+	
+	insecureClient = &http.Client{
+		Timeout:   15 * time.Second,
+		Transport: customTransport,
 	}
 )
 
@@ -301,7 +310,9 @@ func runPaymentPoller(chatID string, token string, clickTime time.Time) {
 
 func startShuffleAndReading(chatID string) {
 	session := getSession(chatID)
-	if session == nil { return }
+	if session == nil {
+		return
+	}
 
 	session.Deck = generateDeck()
 	session.Step = "shuffling"
@@ -455,7 +466,9 @@ func handleUpdate(update map[string]interface{}) {
 			card := deck[i]
 			selectedCards = append(selectedCards, CardRequest{Name: card.Name, IsReversed: card.IsReversed})
 			reversedStr := ""
-			if card.IsReversed { reversedStr = " 🔄 (Перевёрнутая)" }
+			if card.IsReversed {
+				reversedStr = " 🔄 (Перевёрнутая)"
+			}
 			cardTexts = append(cardTexts, fmt.Sprintf("🃏 Позиция %d: %s%s", i+1, card.Name, reversedStr))
 		}
 
@@ -464,7 +477,7 @@ func handleUpdate(update map[string]interface{}) {
 
 		reqBody := ReadSpreadRequest{Question: question, Spread: selectedSpread, Cards: selectedCards}
 		jsonData, _ := json.Marshal(reqBody)
-		
+
 		resp, err := insecureClient.Post(backendURL+"/api/read-spread", "application/json", bytes.NewBuffer(jsonData))
 		clearSession(chatID)
 
@@ -490,7 +503,9 @@ func handleUpdate(update map[string]interface{}) {
 }
 
 func min(a, b int) int {
-	if a < b { return a }
+	if a < b {
+		return a
+	}
 	return b
 }
 
@@ -506,7 +521,7 @@ func main() {
 	for {
 		url := fmt.Sprintf("%s/updates", maxAPIBaseURL)
 		log.Printf("Preparing polling request to: %s", url)
-		
+
 		req, _ := http.NewRequest("GET", url, nil)
 		req.Header.Set("Authorization", maxBotToken)
 		req.Header.Set("Accept", "application/json")
@@ -518,7 +533,7 @@ func main() {
 			time.Sleep(3 * time.Second)
 			continue
 		}
-		
+
 		log.Printf("Received response, status: %d", resp.StatusCode)
 
 		bodyBytes, _ := io.ReadAll(resp.Body)
@@ -540,7 +555,7 @@ func main() {
 		for _, update := range maxResponse.Updates {
 			go handleUpdate(update)
 		}
-		
+
 		time.Sleep(1 * time.Second)
 	}
 }

@@ -11,10 +11,10 @@ RUN go mod tidy && go mod download
 
 RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o maxbot ./cmd/maxbot/main.go
 
-FROM alpine:latest
+# Используем Debian Slim вместо Alpine для лучшей совместимости с CA-сертификатами и сетью
+FROM debian:bookworm-slim
 
-# КРИТИЧЕСКИ ВАЖНО: Устанавливаем корневые сертификаты для валидации HTTPS-соединений
-RUN apk add --no-cache ca-certificates
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /root/
 
