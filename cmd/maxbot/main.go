@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	mrand "math/rand"
 	"net/http"
@@ -162,20 +163,48 @@ func checkPayment(chatID string, clickTime time.Time) bool {
 
 func getCardCount(spread string) int {
 	s := strings.ToLower(spread)
-	if strings.Contains(s, "одна") { return 1 }
-	if strings.Contains(s, "да или нет") { return 3 }
-	if strings.Contains(s, "три") { return 3 }
-	if strings.Contains(s, "крест") && !strings.Contains(s, "кельтский") { return 4 }
-	if strings.Contains(s, "слепое пятно") { return 4 }
-	if strings.Contains(s, "пятикарточн") { return 5 }
-	if strings.Contains(s, "ангел") || strings.Contains(s, "голос") { return 4 }
-	if strings.Contains(s, "пирамида") { return 6 }
-	if strings.Contains(s, "алхимик") { return 6 }
-	if strings.Contains(s, "подкова") { return 7 }
-	if strings.Contains(s, "звезда") || strings.Contains(s, "чакр") { return 7 }
-	if strings.Contains(s, "партнерство") || strings.Contains(s, "партнёрство") { return 7 }
-	if strings.Contains(s, "кельтский") { return 10 }
-	if strings.Contains(s, "колесо") { return 12 }
+	if strings.Contains(s, "одна") {
+		return 1
+	}
+	if strings.Contains(s, "да или нет") {
+		return 3
+	}
+	if strings.Contains(s, "три") {
+		return 3
+	}
+	if strings.Contains(s, "крест") && !strings.Contains(s, "кельтский") {
+		return 4
+	}
+	if strings.Contains(s, "слепое пятно") {
+		return 4
+	}
+	if strings.Contains(s, "пятикарточн") {
+		return 5
+	}
+	if strings.Contains(s, "ангел") || strings.Contains(s, "голос") {
+		return 4
+	}
+	if strings.Contains(s, "пирамида") {
+		return 6
+	}
+	if strings.Contains(s, "алхимик") {
+		return 6
+	}
+	if strings.Contains(s, "подкова") {
+		return 7
+	}
+	if strings.Contains(s, "звезда") || strings.Contains(s, "чакр") {
+		return 7
+	}
+	if strings.Contains(s, "партнерство") || strings.Contains(s, "партнёрство") {
+		return 7
+	}
+	if strings.Contains(s, "кельтский") {
+		return 10
+	}
+	if strings.Contains(s, "колесо") {
+		return 12
+	}
 	return 3
 }
 
@@ -225,7 +254,7 @@ func maxAPIRequest(method, path string, reqBody interface{}, respBody interface{
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", maxBotToken) // Или "Bearer " + maxBotToken, в зависимости от точных доков MAX
+	req.Header.Set("Authorization", maxBotToken)
 
 	client := &http.Client{Timeout: 15 * time.Second}
 	resp, err := client.Do(req)
@@ -285,52 +314,65 @@ func runPaymentPoller(chatID string, token string, clickTime time.Time) {
 
 func startShuffleAndReading(chatID string) {
 	session := getSession(chatID)
-	if session == nil { return }
+	if session == nil {
+		return
+	}
 
 	session.Deck = generateDeck()
 	session.Step = "shuffling"
 	setSession(chatID, session)
 
-	maxSendText(chatID, "🌪️ *Перемешиваем колоду...*")
+	maxSendText(chatID, "🌪️ Перемешиваем колоду...")
 	time.Sleep(1500 * time.Millisecond)
-	maxSendText(chatID, "🃏 *Карты выравниваются и заряжаются вашим намерением...*")
+	maxSendText(chatID, "🃏 Карты выравниваются и заряжаются вашим намерением...")
 	time.Sleep(1500 * time.Millisecond)
-	
+
 	buttons := [][]map[string]string{
 		{{"text": "✂️ Срезать колоду", "callback_data": "cut_deck"}},
 	}
-	maxSendKeyboard(chatID, "✨ Колода готова! Нажмите кнопку ниже, чтобы **срезать колоду** (это случайным образом разделит её и переместит верхнюю часть вниз).", buttons)
+	maxSendKeyboard(chatID, "✨ Колода готова! Нажмите кнопку ниже, чтобы срезать колоду (это случайным образом разделит её и переместит верхнюю часть вниз).", buttons)
 }
 
 func handleUpdate(update map[string]interface{}) {
-	// Упрощенный парсинг MAX update (адаптируйте под точную структуру JSON из MAX docs)
-	// Обычно: update["payload"].(map[string]interface{})["message"] или "callback_query"
-	
 	payload, ok := update["payload"].(map[string]interface{})
-	if !ok { return }
+	if !ok {
+		return
+	}
 
 	var chatID, text, callbackQueryID, callbackData string
 	var isCallback bool
 
 	if msg, ok := payload["message"].(map[string]interface{}); ok {
 		if sender, ok := msg["sender"].(map[string]interface{}); ok {
-			if id, ok := sender["user_id"].(string); ok { chatID = id }
+			if id, ok := sender["user_id"].(string); ok {
+				chatID = id
+			}
 		}
 		if body, ok := msg["body"].(map[string]interface{}); ok {
-			if t, ok := body["text"].(string); ok { text = strings.TrimSpace(t) }
+			if t, ok := body["text"].(string); ok {
+				text = strings.TrimSpace(t)
+			}
 		}
 	} else if cb, ok := payload["callback_query"].(map[string]interface{}); ok {
 		isCallback = true
-		if id, ok := cb["id"].(string); ok { callbackQueryID = id }
-		if data, ok := cb["data"].(string); ok { callbackData = data }
+		if id, ok := cb["id"].(string); ok {
+			callbackQueryID = id
+		}
+		if data, ok := cb["data"].(string); ok {
+			callbackData = data
+		}
 		if msg, ok := cb["message"].(map[string]interface{}); ok {
 			if sender, ok := msg["sender"].(map[string]interface{}); ok {
-				if id, ok := sender["user_id"].(string); ok { chatID = id }
+				if id, ok := sender["user_id"].(string); ok {
+					chatID = id
+				}
 			}
 		}
 	}
 
-	if chatID == "" { return }
+	if chatID == "" {
+		return
+	}
 
 	session := getSession(chatID)
 
@@ -371,9 +413,9 @@ func handleUpdate(update map[string]interface{}) {
 			simulatePaymentDelay(chatID)
 
 			maxAnswerCallback(callbackQueryID, "Расклад выбран")
-			
-			msg := fmt.Sprintf("Вы выбрали: *%s*\n💰 Стоимость: *%d₽*\n\n📋 *Номер платежа:* `%s`\n⏰ Токен действителен 1 час\n\nПереведите сумму на карту: `2200 0000 0000 0000`\n\nПосле перевода нажмите кнопку ниже.", session.SelectedSpread, session.SpreadPrice, session.PaymentToken)
-			
+
+			msg := fmt.Sprintf("Вы выбрали: *%s*\n💰 Стоимость: *%d₽*\n\n📋 Номер платежа: %s\n⏰ Токен действителен 1 час\n\nПереведите сумму на карту: 2200 0000 0000 0000\n\nПосле перевода нажмите кнопку ниже.", session.SelectedSpread, session.SpreadPrice, session.PaymentToken)
+
 			buttons := [][]map[string]string{
 				{{"text": "✅ Я оплатил", "callback_data": "check_payment"}},
 			}
@@ -408,7 +450,7 @@ func handleUpdate(update map[string]interface{}) {
 	// 5. Срез колоды и интерпретация
 	if isCallback && callbackData == "cut_deck" {
 		maxAnswerCallback(callbackQueryID, "Колода срезана!")
-		
+
 		selectedSpread := session.SelectedSpread
 		question := session.Question
 		deck := session.Deck
@@ -425,21 +467,22 @@ func handleUpdate(update map[string]interface{}) {
 		for i := 0; i < cardCount && i < len(deck); i++ {
 			card := deck[i]
 			selectedCards = append(selectedCards, CardRequest{Name: card.Name, IsReversed: card.IsReversed})
-			
+
 			reversedStr := ""
-			if card.IsReversed { reversedStr = " 🔄 (Перевёрнутая)" }
-			cardTexts = append(cardTexts, fmt.Sprintf("🃏 **Позиция %d:** %s%s", i+1, card.Name, reversedStr))
+			if card.IsReversed {
+				reversedStr = " 🔄 (Перевёрнутая)"
+			}
+			cardTexts = append(cardTexts, fmt.Sprintf("🃏 Позиция %d: %s%s", i+1, card.Name, reversedStr))
 		}
 
-		// Отправляем карты текстом (пока без картинок, чтобы избежать сложной двухэтапной загрузки MAX)
-		maxSendText(chatID, "Выпавшие карты:\n\n" + strings.Join(cardTexts, "\n"))
+		maxSendText(chatID, "Выпавшие карты:\n\n"+strings.Join(cardTexts, "\n"))
 		maxSendText(chatID, "⏳ Запрашиваем мудрость ИИ для интерпретации этого расклада...")
 
 		reqBody := ReadSpreadRequest{Question: question, Spread: selectedSpread, Cards: selectedCards}
 		jsonData, _ := json.Marshal(reqBody)
 		client := &http.Client{Timeout: 30 * time.Second}
 		resp, err := client.Post(backendURL+"/api/read-spread", "application/json", bytes.NewBuffer(jsonData))
-		
+
 		clearSession(chatID)
 
 		if err != nil || resp == nil || resp.StatusCode != http.StatusOK {
@@ -453,7 +496,7 @@ func handleUpdate(update map[string]interface{}) {
 			return
 		}
 
-		answerText := fmt.Sprintf("🔮 **Расклад: %s**\n📜 **Вопрос:** _%s_\n\n%s\n\n_Хотите задать еще один вопрос? Напишите /start_", selectedSpread, question, result.Interpretation)
+		answerText := fmt.Sprintf("🔮 Расклад: %s\n📜 Вопрос: %s\n\n%s\n\nХотите задать еще один вопрос? Напишите /start", selectedSpread, question, result.Interpretation)
 		maxSendText(chatID, answerText)
 		return
 	}
@@ -464,18 +507,31 @@ func handleUpdate(update map[string]interface{}) {
 	}
 }
 
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
 func main() {
 	if maxBotToken == "" {
 		log.Fatal("MAX_BOT_TOKEN is not set")
 	}
+
 	log.Printf("Starting MAX Bot...")
+	log.Printf("MAX_API_BASE_URL: %s", maxAPIBaseURL)
+	log.Printf("MAX_BOT_TOKEN: %s...", maxBotToken[:min(10, len(maxBotToken))])
 
 	// Long Polling цикл
 	for {
 		url := fmt.Sprintf("%s/updates?timeout=30", maxAPIBaseURL)
+		log.Printf("Polling URL: %s", url)
+
 		req, _ := http.NewRequest("GET", url, nil)
 		req.Header.Set("Authorization", maxBotToken)
-		
+		req.Header.Set("Accept", "application/json")
+
 		client := &http.Client{Timeout: 35 * time.Second}
 		resp, err := client.Do(req)
 		if err != nil {
@@ -484,18 +540,22 @@ func main() {
 			continue
 		}
 
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+
+		log.Printf("Response status: %d", resp.StatusCode)
+		log.Printf("Response body (first 500 chars): %s", string(bodyBytes[:min(500, len(bodyBytes))]))
+
 		var result struct {
-			Ok      bool                   `json:"ok"`
+			Ok      bool                     `json:"ok"`
 			Results []map[string]interface{} `json:"results"`
 		}
-		
-		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+
+		if err := json.Unmarshal(bodyBytes, &result); err != nil {
 			log.Printf("Error decoding updates: %v", err)
-			resp.Body.Close()
 			time.Sleep(3 * time.Second)
 			continue
 		}
-		resp.Body.Close()
 
 		if result.Ok {
 			for _, update := range result.Results {
