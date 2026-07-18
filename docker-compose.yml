@@ -110,16 +110,16 @@ services:
   maxbot:
     build:
       context: .
-      dockerfile: Dockerfile.maxbot # Используем тот же Dockerfile, он соберет cmd/maxbot/main.go если мы укажем это, но лучше создать Dockerfile.maxbot
+      dockerfile: Dockerfile.maxbot
     container_name: arcana-maxbot
     environment:
       - MAX_BOT_TOKEN=${MAX_BOT_TOKEN}
-      - MAX_API_BASE_URL=${MAX_API_BASE_URL:-https://api.max.ru/v1/bot}
-      - BACKEND_URL=http://backend:8080
+      - MAX_API_BASE_URL=${MAX_API_BASE_URL:-https://platform-api2.max.ru}
+      # ВАЖНО: При использовании host сети мы обращаемся к бэкенду через localhost и проброшенный порт
+      - BACKEND_URL=http://127.0.0.1:18080
     depends_on:
       - backend
-    networks:
-      - arcana-net
+    network_mode: "host"
     restart: unless-stopped
 
   frontend:
