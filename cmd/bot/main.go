@@ -318,9 +318,10 @@ func main() {
 		log.Fatal("TELEGRAM_BOT_TOKEN is not set")
 	}
 
-	// Создаем HTTP-клиент с явным таймаутом 10 секунд для предотвращения зависаний
+	// Создаем HTTP-клиент с таймаутом 120 секунд.
+	// Это должно быть БОЛЬШЕ, чем u.Timeout = 60, чтобы не обрывать long-polling Telegram.
 	httpClient := &http.Client{
-		Timeout: 10 * time.Second,
+		Timeout: 120 * time.Second,
 	}
 
 	// Инициализируем бота с кастомным HTTP-клиентом
