@@ -71,8 +71,9 @@ var (
 		Timeout:   15 * time.Second,
 		Transport: insecureTransport,
 	}
+	// СОКРАЩЕНО до 10 секунд для быстрой диагностики сетевых проблем
 	pollingClient = &http.Client{
-		Timeout:   35 * time.Second,
+		Timeout:   10 * time.Second,
 		Transport: insecureTransport,
 	}
 )
@@ -321,9 +322,7 @@ func handleUpdate(update map[string]interface{}) {
 	var chatID, text, callbackQueryID, callbackData string
 	var isCallback bool
 
-	// MAX API структура: update содержит "message" или "message_callback"
 	if msg, ok := update["message"].(map[string]interface{}); ok {
-		// Извлекаем chat_id из sender или recipient
 		if sender, ok := msg["sender"].(map[string]interface{}); ok {
 			if uid, ok := sender["user_id"].(float64); ok {
 				chatID = fmt.Sprintf("%.0f", uid)
@@ -356,7 +355,6 @@ func handleUpdate(update map[string]interface{}) {
 		if data, ok := cb["payload"].(string); ok {
 			callbackData = data
 		}
-		// Извлекаем chat_id для callback
 		if msg, ok := cb["message"].(map[string]interface{}); ok {
 			if sender, ok := msg["sender"].(map[string]interface{}); ok {
 				if uid, ok := sender["user_id"].(float64); ok {
@@ -374,7 +372,6 @@ func handleUpdate(update map[string]interface{}) {
 
 	session := getSession(chatID)
 
-	// 1. Старт
 	if text == "/start" || text == "🔮 Новый расклад" {
 		clearSession(chatID)
 		setSession(chatID, &UserSession{Step: "awaiting_question"})
@@ -382,7 +379,6 @@ func handleUpdate(update map[string]interface{}) {
 		return
 	}
 
-	// 2. Вопрос
 	if session != nil && session.Step == "awaiting_question" && text != "" {
 		session.Question = text
 		session.Step = "awaiting_spread"
@@ -398,7 +394,6 @@ func handleUpdate(update map[string]interface{}) {
 		return
 	}
 
-	// 3. Выбор расклада
 	if isCallback && strings.HasPrefix(callbackData, "select_spread|") {
 		parts := strings.Split(callbackData, "|")
 		if len(parts) == 3 {
@@ -418,7 +413,6 @@ func handleUpdate(update map[string]interface{}) {
 		return
 	}
 
-	// 4. Проверка оплаты
 	if isCallback && callbackData == "check_payment" {
 		if time.Since(session.PaymentCreatedAt) > PaymentTokenLifetime {
 			maxAnswerCallback(callbackQueryID, "Токен истёк")
@@ -441,7 +435,6 @@ func handleUpdate(update map[string]interface{}) {
 		return
 	}
 
-	// 5. Срез колоды и интерпретация
 	if isCallback && callbackData == "cut_deck" {
 		maxAnswerCallback(callbackQueryID, "Колода срезана!")
 
@@ -512,21 +505,27 @@ func main() {
 
 	for {
 		url := fmt.Sprintf("%s/updates", maxAPIBaseURL)
+		log.Printf("Preparing polling request to: %s", url)
+		
 		req, _ := http.NewRequest("GET", url, nil)
 		req.Header.Set("Authorization", maxBotToken)
 		req.Header.Set("Accept", "application/json")
 
+		log.Printf("Sending polling request (timeout 10s)...")
 		resp, err := pollingClient.Do(req)
 		if err != nil {
 			log.Printf("Error polling: %v", err)
 			time.Sleep(3 * time.Second)
 			continue
 		}
+		
+		log.Printf("Received response, status: %d", resp.StatusCode)
 
 		bodyBytes, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
 
-		// ИСПРАВЛЕНО: Правильная структура ответа MAX API
+		log.Printf("Response body (first 500 chars): %s", string(bodyBytes[:min(500, len(bodyBytes))]))
+
 		var maxResponse struct {
 			Updates []map[string]interface{} `json:"updates"`
 			Marker  int64                    `json:"marker"`
