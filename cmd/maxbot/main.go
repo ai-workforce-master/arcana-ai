@@ -60,13 +60,16 @@ var (
 	sessions      = make(map[string]*UserSession)
 	sessionsMutex sync.RWMutex
 	maxBotToken   = getEnv("MAX_BOT_TOKEN", "")
+	// Базовый URL оставляем для логики, но в запросах будем использовать жесткий IP
 	maxAPIBaseURL = getEnv("MAX_API_BASE_URL", "https://platform-api2.max.ru")
-	backendURL    = getEnv("BACKEND_URL", "http://127.0.0.1:18080") // localhost из-за network_mode: host
+	backendURL    = getEnv("BACKEND_URL", "http://127.0.0.1:18080")
 
 	paymentSimDelay = make(map[string]time.Duration)
 	paymentSimMutex sync.RWMutex
 
-	// Принудительно используем ТОЛЬКО IPv4 (tcp4), чтобы избежать зависаний на IPv6
+	// Жестко задаем рабочий IP-адрес, чтобы обойти зависающие IP в DNS-ротации
+	workingMaxIP = "155.212.204.75"
+
 	customTransport = &http.Transport{
 		Proxy: http.ProxyFromEnvironment,
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
@@ -78,6 +81,7 @@ var (
 		},
 		TLSHandshakeTimeout: 5 * time.Second,
 		TLSClientConfig:     &tls.Config{InsecureSkipVerify: true},
+		ForceAttemptHTTP2:   false, // Отключаем HTTP/2 на всякий случай для максимальной совместимости
 	}
 
 	pollingClient = &http.Client{
@@ -243,7 +247,9 @@ func maxAnswerCallback(callbackQueryID, text string) error {
 }
 
 func maxAPIRequest(method, path string, reqBody interface{}, respBody interface{}) error {
-	url := maxAPIBaseURL + path
+	// ЯДЕРНЫЙ ВАРИАНТ: Жестко используем рабочий IP, чтобы избежать зависания на других IP из DNS
+	url := "https://" + workingMaxIP + path
+	
 	jsonData, err := json.Marshal(reqBody)
 	if err != nil {
 		return err
@@ -255,6 +261,9 @@ func maxAPIRequest(method, path string, reqBody interface{}, respBody interface{
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", maxBotToken)
+	// КРИТИЧЕСКИ ВАЖНО: Указываем правильный Host, чтобы сервер MAX принял запрос 
+	// и TLS-рукопожатие прошло проверку сертификата (SNI)
+	req.Host = "platform-api2.max.ru"
 
 	resp, err := insecureClient.Do(req)
 	if err != nil {
@@ -523,14 +532,17 @@ func main() {
 	log.Printf("MAX_BOT_TOKEN: %s...", maxBotToken[:min(10, len(maxBotToken))])
 
 	for {
-		url := fmt.Sprintf("%s/updates", maxAPIBaseURL)
-		log.Printf("Preparing polling request to: %s", url)
+		// ЯДЕРНЫЙ ВАРИАНТ: Прямое обращение к рабочему IP, минуя DNS
+		url := "https://" + workingMaxIP + "/updates"
+		log.Printf("Preparing polling request to: %s (forced IP)", url)
 
 		req, _ := http.NewRequest("GET", url, nil)
 		req.Header.Set("Authorization", maxBotToken)
 		req.Header.Set("Accept", "application/json")
+		// КРИТИЧЕСКИ ВАЖНО: Указываем правильный Host для SNI и маршрутизации на сервере MAX
+		req.Host = "platform-api2.max.ru"
 
-		log.Printf("Sending polling request (timeout 10s, forced IPv4)...")
+		log.Printf("Sending polling request (timeout 10s, forced IPv4 & IP)...")
 		resp, err := pollingClient.Do(req)
 		if err != nil {
 			log.Printf("Error polling: %v", err)
