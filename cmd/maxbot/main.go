@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
@@ -60,18 +61,21 @@ var (
 	sessionsMutex sync.RWMutex
 	maxBotToken   = getEnv("MAX_BOT_TOKEN", "")
 	maxAPIBaseURL = getEnv("MAX_API_BASE_URL", "https://platform-api2.max.ru")
-	backendURL    = getEnv("BACKEND_URL", "http://backend:8080")
+	backendURL    = getEnv("BACKEND_URL", "http://127.0.0.1:18080") // localhost из-за network_mode: host
 
 	paymentSimDelay = make(map[string]time.Duration)
 	paymentSimMutex sync.RWMutex
 
-	// Жесткие сетевые таймауты для предотвращения зависаний на уровне TCP/TLS
+	// Принудительно используем ТОЛЬКО IPv4 (tcp4), чтобы избежать зависаний на IPv6
 	customTransport = &http.Transport{
 		Proxy: http.ProxyFromEnvironment,
-		DialContext: (&net.Dialer{
-			Timeout:   5 * time.Second,
-			KeepAlive: 30 * time.Second,
-		}).DialContext,
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			dialer := &net.Dialer{
+				Timeout:   5 * time.Second,
+				KeepAlive: 30 * time.Second,
+			}
+			return dialer.DialContext(ctx, "tcp4", addr)
+		},
 		TLSHandshakeTimeout: 5 * time.Second,
 		TLSClientConfig:     &tls.Config{InsecureSkipVerify: true},
 	}
@@ -526,7 +530,7 @@ func main() {
 		req.Header.Set("Authorization", maxBotToken)
 		req.Header.Set("Accept", "application/json")
 
-		log.Printf("Sending polling request (timeout 10s)...")
+		log.Printf("Sending polling request (timeout 10s, forced IPv4)...")
 		resp, err := pollingClient.Do(req)
 		if err != nil {
 			log.Printf("Error polling: %v", err)
