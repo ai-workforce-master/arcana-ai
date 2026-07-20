@@ -66,28 +66,33 @@ var (
 	paymentSimDelay = make(map[string]time.Duration)
 	paymentSimMutex sync.RWMutex
 
-	// Жестко задаем рабочий IP-адрес, чтобы обойти зависающие IP в DNS-ротации
 	workingMaxIP = "155.212.204.75"
 
+	// Отключаем HTTP/2, чтобы избежать зависаний на специфичных конфигурациях сервера
 	customTransport = &http.Transport{
 		Proxy: http.ProxyFromEnvironment,
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			log.Printf("DEBUG Dial: attempting tcp4 to %s", addr)
+			start := time.Now()
 			dialer := &net.Dialer{
 				Timeout:   5 * time.Second,
 				KeepAlive: 30 * time.Second,
 			}
-			return dialer.DialContext(ctx, "tcp4", addr)
+			conn, err := dialer.DialContext(ctx, "tcp4", addr)
+			log.Printf("DEBUG Dial: completed in %v, err=%v", time.Since(start), err)
+			return conn, err
 		},
 		TLSHandshakeTimeout: 10 * time.Second,
 		TLSClientConfig: &tls.Config{
 			InsecureSkipVerify: true,
-			// КРИТИЧЕСКИ ВАЖНО: Указываем правильное доменное имя для SNI при подключении по IP
-			ServerName: "platform-api2.max.ru",
+			ServerName:         "platform-api2.max.ru",
 		},
+		// Пустой мап TLSNextProto полностью отключает поддержку HTTP/2 в Go
+		TLSNextProto: make(map[string]func(authority string, c *tls.Conn) http.RoundTripper),
 	}
 
 	pollingClient = &http.Client{
-		Timeout:   10 * time.Second,
+		Timeout:   15 * time.Second, // Немного увеличили для надежности
 		Transport: customTransport,
 	}
 	
@@ -532,14 +537,14 @@ func main() {
 
 	for {
 		url := "https://" + workingMaxIP + "/updates"
-		log.Printf("Preparing polling request to: %s (forced IP)", url)
+		log.Printf("Preparing polling request to: %s (forced IP, HTTP/1.1 only)", url)
 
 		req, _ := http.NewRequest("GET", url, nil)
 		req.Header.Set("Authorization", maxBotToken)
 		req.Header.Set("Accept", "application/json")
 		req.Host = "platform-api2.max.ru"
 
-		log.Printf("Sending polling request (timeout 10s, forced IPv4 & IP with correct SNI)...")
+		log.Printf("Sending polling request (timeout 15s, forced IPv4 & IP with correct SNI)...")
 		resp, err := pollingClient.Do(req)
 		if err != nil {
 			log.Printf("Error polling: %v", err)
