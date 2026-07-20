@@ -84,14 +84,14 @@ var (
 			ServerName:         "platform-api2.max.ru",
 		},
 		TLSNextProto:      make(map[string]func(authority string, c *tls.Conn) http.RoundTripper),
-		DisableKeepAlives: true, 
+		DisableKeepAlives: true,
 	}
 
 	pollingClient = &http.Client{
 		Timeout:   60 * time.Second,
 		Transport: customTransport,
 	}
-	
+
 	insecureClient = &http.Client{
 		Timeout:   15 * time.Second,
 		Transport: customTransport,
@@ -216,7 +216,6 @@ func getCardCount(spread string) int {
 
 // --- MAX API Клиент ---
 
-// ИСПРАВЛЕНО: user_id передается в URL как query-параметр, а не в JSON-теле
 func maxSendText(userID int64, text string) error {
 	reqBody := map[string]interface{}{
 		"text":   text,
@@ -225,7 +224,8 @@ func maxSendText(userID int64, text string) error {
 	return maxAPIRequest("POST", fmt.Sprintf("/messages?user_id=%d", userID), reqBody, nil)
 }
 
-func maxSendKeyboard(userID int64, text string, buttons [][]map[string]string) error {
+// ИСПРАВЛЕНО: Кнопки теперь имеют тип map[string]interface{} и обязательное поле "type": "callback"
+func maxSendKeyboard(userID int64, text string, buttons [][]map[string]interface{}) error {
 	attachments := []interface{}{
 		map[string]interface{}{
 			"type": "inline_keyboard",
@@ -242,17 +242,18 @@ func maxSendKeyboard(userID int64, text string, buttons [][]map[string]string) e
 	return maxAPIRequest("POST", fmt.Sprintf("/messages?user_id=%d", userID), reqBody, nil)
 }
 
-func maxAnswerCallback(callbackQueryID, text string) error {
+// ИСПРАВЛЕНО: Правильный эндпоинт и параметры для ответа на callback в MAX/TamTam API
+func maxAnswerCallback(callbackQueryID, notificationText string) error {
 	reqBody := map[string]interface{}{
-		"callback_query_id": callbackQueryID,
-		"text":              text,
+		"callback_id":  callbackQueryID,
+		"notification": notificationText,
 	}
-	return maxAPIRequest("POST", "/answer_callback", reqBody, nil)
+	return maxAPIRequest("POST", "/answers", reqBody, nil)
 }
 
 func maxAPIRequest(method, path string, reqBody interface{}, respBody interface{}) error {
 	url := "https://" + workingMaxIP + path
-	
+
 	jsonData, err := json.Marshal(reqBody)
 	if err != nil {
 		return err
@@ -336,8 +337,14 @@ func startShuffleAndReading(userID int64, userStr string) {
 	maxSendText(userID, "🃏 Карты выравниваются и заряжаются вашим намерением...")
 	time.Sleep(1500 * time.Millisecond)
 
-	buttons := [][]map[string]string{
-		{{"text": "✂️ Срезать колоду", "payload": "cut_deck"}},
+	buttons := [][]map[string]interface{}{
+		{
+			{
+				"type":    "callback",
+				"text":    "✂️ Срезать колоду",
+				"payload": "cut_deck",
+			},
+		},
 	}
 	maxSendKeyboard(userID, "✨ Колода готова! Нажмите кнопку ниже, чтобы срезать колоду.", buttons)
 }
@@ -347,33 +354,37 @@ func handleUpdate(update map[string]interface{}) {
 	var text, callbackQueryID, callbackData string
 	var isCallback bool
 
-	if msg, ok := update["message"].(map[string]interface{}); ok {
-		if sender, ok := msg["sender"].(map[string]interface{}); ok {
-			if uid, ok := sender["user_id"].(float64); ok {
-				userID = int64(uid)
-			}
-		}
+	// ИСПРАВЛЕНО: Правильный парсинг update_type для MAX API
+	updateType, _ := update["update_type"].(string)
 
-		if body, ok := msg["body"].(map[string]interface{}); ok {
-			if t, ok := body["text"].(string); ok {
-				text = strings.TrimSpace(t)
-			}
-		}
-	} else if cb, ok := update["message_callback"].(map[string]interface{}); ok {
-		isCallback = true
-		if id, ok := cb["id"].(float64); ok {
-			callbackQueryID = fmt.Sprintf("%.0f", id)
-		} else if id, ok := cb["id"].(string); ok {
-			callbackQueryID = id
-		}
-		if data, ok := cb["payload"].(string); ok {
-			callbackData = data
-		}
-		if msg, ok := cb["message"].(map[string]interface{}); ok {
+	if updateType == "message_created" {
+		if msg, ok := update["message"].(map[string]interface{}); ok {
 			if sender, ok := msg["sender"].(map[string]interface{}); ok {
 				if uid, ok := sender["user_id"].(float64); ok {
 					userID = int64(uid)
 				}
+			}
+
+			if body, ok := msg["body"].(map[string]interface{}); ok {
+				if t, ok := body["text"].(string); ok {
+					text = strings.TrimSpace(t)
+				}
+			}
+		}
+	} else if updateType == "message_callback" {
+		isCallback = true
+		// В MAX API данные callback находятся во вложенном объекте "callback"
+		if cb, ok := update["callback"].(map[string]interface{}); ok {
+			if id, ok := cb["id"].(string); ok {
+				callbackQueryID = id
+			} else if id, ok := cb["id"].(float64); ok {
+				callbackQueryID = fmt.Sprintf("%.0f", id)
+			}
+			if data, ok := cb["payload"].(string); ok {
+				callbackData = data
+			}
+			if uid, ok := cb["user_id"].(float64); ok {
+				userID = int64(uid)
 			}
 		}
 	}
@@ -388,7 +399,7 @@ func handleUpdate(update map[string]interface{}) {
 	if text == "/start" || text == "🔮 Новый расклад" {
 		clearSession(userStr)
 		setSession(userStr, &UserSession{Step: "awaiting_question"})
-		
+
 		err := maxSendText(userID, "🔮 Добро пожаловать в Arcana AI!\n\nЗадайте ваш вопрос картам Таро (например: 'Что меня ждет в новом проекте?'):")
 		if err != nil {
 			log.Printf("ERROR sending start message to %d: %v", userID, err)
@@ -403,10 +414,15 @@ func handleUpdate(update map[string]interface{}) {
 		session.Step = "awaiting_spread"
 		setSession(userStr, session)
 
-		var buttons [][]map[string]string
+		// ИСПРАВЛЕНО: Добавлено "type": "callback" для каждой кнопки
+		var buttons [][]map[string]interface{}
 		for _, sp := range availableSpreads {
-			buttons = append(buttons, []map[string]string{
-				{"text": fmt.Sprintf("%s — %d₽", sp.Name, sp.Price), "payload": fmt.Sprintf("select_spread|%s|%d", sp.Name, sp.Price)},
+			buttons = append(buttons, []map[string]interface{}{
+				{
+					"type":    "callback",
+					"text":    fmt.Sprintf("%s — %d₽", sp.Name, sp.Price),
+					"payload": fmt.Sprintf("select_spread|%s|%d", sp.Name, sp.Price),
+				},
 			})
 		}
 		err := maxSendKeyboard(userID, "Отличный вопрос! Выберите тип расклада:", buttons)
@@ -421,6 +437,9 @@ func handleUpdate(update map[string]interface{}) {
 	if isCallback && strings.HasPrefix(callbackData, "select_spread|") {
 		parts := strings.Split(callbackData, "|")
 		if len(parts) == 3 {
+			if session == nil {
+				session = &UserSession{}
+			}
 			session.SelectedSpread = parts[1]
 			fmt.Sscanf(parts[2], "%d", &session.SpreadPrice)
 			session.PaymentToken = uuid.New().String()
@@ -431,8 +450,17 @@ func handleUpdate(update map[string]interface{}) {
 
 			maxAnswerCallback(callbackQueryID, "Расклад выбран")
 			msg := fmt.Sprintf("Вы выбрали: *%s*\n💰 Стоимость: *%d₽*\n\n📋 Номер платежа: %s\n⏰ Токен действителен 1 час\n\nПереведите сумму на карту: 2200 0000 0000 0000\n\nПосле перевода нажмите кнопку ниже.", session.SelectedSpread, session.SpreadPrice, session.PaymentToken)
-			buttons := [][]map[string]string{{{"text": "✅ Я оплатил", "payload": "check_payment"}}}
 			
+			buttons := [][]map[string]interface{}{
+				{
+					{
+						"type":    "callback",
+						"text":    "✅ Я оплатил",
+						"payload": "check_payment",
+					},
+				},
+			}
+
 			err := maxSendKeyboard(userID, msg, buttons)
 			if err != nil {
 				log.Printf("ERROR sending payment prompt to %d: %v", userID, err)
@@ -444,7 +472,7 @@ func handleUpdate(update map[string]interface{}) {
 	}
 
 	if isCallback && callbackData == "check_payment" {
-		if time.Since(session.PaymentCreatedAt) > PaymentTokenLifetime {
+		if session == nil || time.Since(session.PaymentCreatedAt) > PaymentTokenLifetime {
 			maxAnswerCallback(callbackQueryID, "Токен истёк")
 			maxSendText(userID, "⏳ Токен истёк. Начните заново с /start")
 			clearSession(userStr)
@@ -467,6 +495,8 @@ func handleUpdate(update map[string]interface{}) {
 
 	if isCallback && callbackData == "cut_deck" {
 		maxAnswerCallback(callbackQueryID, "Колода срезана!")
+
+		if session == nil { return }
 
 		selectedSpread := session.SelectedSpread
 		question := session.Question
@@ -516,7 +546,7 @@ func handleUpdate(update map[string]interface{}) {
 		return
 	}
 
-	if session == nil {
+	if session == nil && text != "" {
 		maxSendText(userID, "Пожалуйста, напишите /start или '🔮 Новый расклад' для начала.")
 	}
 }
