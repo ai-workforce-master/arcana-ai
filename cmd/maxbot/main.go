@@ -83,11 +83,10 @@ var (
 			InsecureSkipVerify: true,
 			ServerName:         "platform-api2.max.ru",
 		},
-		TLSNextProto:    make(map[string]func(authority string, c *tls.Conn) http.RoundTripper),
-		DisableKeepAlives: true, // КРИТИЧЕСКИ ВАЖНО: запрещаем переиспользование соединений, чтобы избежать зависаний на "мертвых" сокетах
+		TLSNextProto:      make(map[string]func(authority string, c *tls.Conn) http.RoundTripper),
+		DisableKeepAlives: true, 
 	}
 
-	// Увеличиваем таймаут до 60 секунд для корректной работы Long Polling
 	pollingClient = &http.Client{
 		Timeout:   60 * time.Second,
 		Transport: customTransport,
@@ -347,18 +346,21 @@ func handleUpdate(update map[string]interface{}) {
 	var isCallback bool
 
 	if msg, ok := update["message"].(map[string]interface{}); ok {
-		if sender, ok := msg["sender"].(map[string]interface{}); ok {
-			if uid, ok := sender["user_id"].(float64); ok {
-				chatID = fmt.Sprintf("%.0f", uid)
-			} else if uid, ok := sender["user_id"].(string); ok {
-				chatID = uid
+		// ИСПРАВЛЕНО: Приоритетно берем chat_id из recipient (это ID чата, куда нужно отвечать)
+		if recipient, ok := msg["recipient"].(map[string]interface{}); ok {
+			if cid, ok := recipient["chat_id"].(float64); ok {
+				chatID = fmt.Sprintf("%.0f", cid)
+			} else if cid, ok := recipient["chat_id"].(string); ok {
+				chatID = cid
 			}
 		}
+		
+		// Fallback: если по какой-то причине его нет, пробуем sender.user_id
 		if chatID == "" {
-			if recipient, ok := msg["recipient"].(map[string]interface{}); ok {
-				if uid, ok := recipient["chat_id"].(float64); ok {
+			if sender, ok := msg["sender"].(map[string]interface{}); ok {
+				if uid, ok := sender["user_id"].(float64); ok {
 					chatID = fmt.Sprintf("%.0f", uid)
-				} else if uid, ok := recipient["chat_id"].(string); ok {
+				} else if uid, ok := sender["user_id"].(string); ok {
 					chatID = uid
 				}
 			}
@@ -379,12 +381,13 @@ func handleUpdate(update map[string]interface{}) {
 		if data, ok := cb["payload"].(string); ok {
 			callbackData = data
 		}
+		// Для callback тоже берем chat_id из вложенного message.recipient
 		if msg, ok := cb["message"].(map[string]interface{}); ok {
-			if sender, ok := msg["sender"].(map[string]interface{}); ok {
-				if uid, ok := sender["user_id"].(float64); ok {
-					chatID = fmt.Sprintf("%.0f", uid)
-				} else if uid, ok := sender["user_id"].(string); ok {
-					chatID = uid
+			if recipient, ok := msg["recipient"].(map[string]interface{}); ok {
+				if cid, ok := recipient["chat_id"].(float64); ok {
+					chatID = fmt.Sprintf("%.0f", cid)
+				} else if cid, ok := recipient["chat_id"].(string); ok {
+					chatID = cid
 				}
 			}
 		}
@@ -400,7 +403,6 @@ func handleUpdate(update map[string]interface{}) {
 		clearSession(chatID)
 		setSession(chatID, &UserSession{Step: "awaiting_question"})
 		
-		// ДОБАВЛЕНО: Логирование успеха или ошибки отправки
 		err := maxSendText(chatID, "🔮 Добро пожаловать в Arcana AI!\n\nЗадайте ваш вопрос картам Таро (например: 'Что меня ждет в новом проекте?'):")
 		if err != nil {
 			log.Printf("ERROR sending start message to %s: %v", chatID, err)
@@ -448,6 +450,8 @@ func handleUpdate(update map[string]interface{}) {
 			err := maxSendKeyboard(chatID, msg, buttons)
 			if err != nil {
 				log.Printf("ERROR sending payment prompt to %s: %v", chatID, err)
+			} else {
+				log.Printf("SUCCESS: Sent payment prompt to %s", chatID)
 			}
 		}
 		return
