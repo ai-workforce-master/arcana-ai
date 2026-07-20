@@ -224,7 +224,6 @@ func maxSendText(userID int64, text string) error {
 	return maxAPIRequest("POST", fmt.Sprintf("/messages?user_id=%d", userID), reqBody, nil)
 }
 
-// ИСПРАВЛЕНО: Кнопки теперь имеют тип map[string]interface{} и обязательное поле "type": "callback"
 func maxSendKeyboard(userID int64, text string, buttons [][]map[string]interface{}) error {
 	attachments := []interface{}{
 		map[string]interface{}{
@@ -242,13 +241,12 @@ func maxSendKeyboard(userID int64, text string, buttons [][]map[string]interface
 	return maxAPIRequest("POST", fmt.Sprintf("/messages?user_id=%d", userID), reqBody, nil)
 }
 
-// ИСПРАВЛЕНО: Правильный эндпоинт и параметры для ответа на callback в MAX/TamTam API
+// ИСПРАВЛЕНО: callback_id передается как query-параметр, а не в теле JSON
 func maxAnswerCallback(callbackQueryID, notificationText string) error {
 	reqBody := map[string]interface{}{
-		"callback_id":  callbackQueryID,
 		"notification": notificationText,
 	}
-	return maxAPIRequest("POST", "/answers", reqBody, nil)
+	return maxAPIRequest("POST", fmt.Sprintf("/answers?callback_id=%s", callbackQueryID), reqBody, nil)
 }
 
 func maxAPIRequest(method, path string, reqBody interface{}, respBody interface{}) error {
@@ -354,7 +352,6 @@ func handleUpdate(update map[string]interface{}) {
 	var text, callbackQueryID, callbackData string
 	var isCallback bool
 
-	// ИСПРАВЛЕНО: Правильный парсинг update_type для MAX API
 	updateType, _ := update["update_type"].(string)
 
 	if updateType == "message_created" {
@@ -371,22 +368,28 @@ func handleUpdate(update map[string]interface{}) {
 				}
 			}
 		}
-	} else if updateType == "message_callback" {
+	} else if updateType == "message_callback" || update["callback"] != nil {
 		isCallback = true
-		// В MAX API данные callback находятся во вложенном объекте "callback"
 		if cb, ok := update["callback"].(map[string]interface{}); ok {
-			if id, ok := cb["id"].(string); ok {
+			// ИСПРАВЛЕНО: Правильное имя поля callback_id
+			if id, ok := cb["callback_id"].(string); ok {
 				callbackQueryID = id
-			} else if id, ok := cb["id"].(float64); ok {
+			} else if id, ok := cb["callback_id"].(float64); ok {
 				callbackQueryID = fmt.Sprintf("%.0f", id)
 			}
+			
 			if data, ok := cb["payload"].(string); ok {
 				callbackData = data
 			}
-			if uid, ok := cb["user_id"].(float64); ok {
-				userID = int64(uid)
+			
+			// ИСПРАВЛЕНО: user_id находится внутри объекта "user"
+			if user, ok := cb["user"].(map[string]interface{}); ok {
+				if uid, ok := user["user_id"].(float64); ok {
+					userID = int64(uid)
+				}
 			}
 		}
+		log.Printf("DEBUG: Received callback: id=%s, payload=%s, userID=%d", callbackQueryID, callbackData, userID)
 	}
 
 	if userID == 0 {
@@ -414,7 +417,6 @@ func handleUpdate(update map[string]interface{}) {
 		session.Step = "awaiting_spread"
 		setSession(userStr, session)
 
-		// ИСПРАВЛЕНО: Добавлено "type": "callback" для каждой кнопки
 		var buttons [][]map[string]interface{}
 		for _, sp := range availableSpreads {
 			buttons = append(buttons, []map[string]interface{}{
