@@ -68,31 +68,28 @@ var (
 
 	workingMaxIP = "155.212.204.75"
 
-	// Отключаем HTTP/2, чтобы избежать зависаний на специфичных конфигурациях сервера
 	customTransport = &http.Transport{
 		Proxy: http.ProxyFromEnvironment,
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			log.Printf("DEBUG Dial: attempting tcp4 to %s", addr)
-			start := time.Now()
 			dialer := &net.Dialer{
-				Timeout:   5 * time.Second,
+				Timeout:   10 * time.Second,
 				KeepAlive: 30 * time.Second,
 			}
-			conn, err := dialer.DialContext(ctx, "tcp4", addr)
-			log.Printf("DEBUG Dial: completed in %v, err=%v", time.Since(start), err)
-			return conn, err
+			return dialer.DialContext(ctx, "tcp4", addr)
 		},
 		TLSHandshakeTimeout: 10 * time.Second,
 		TLSClientConfig: &tls.Config{
 			InsecureSkipVerify: true,
 			ServerName:         "platform-api2.max.ru",
 		},
-		// Пустой мап TLSNextProto полностью отключает поддержку HTTP/2 в Go
-		TLSNextProto: make(map[string]func(authority string, c *tls.Conn) http.RoundTripper),
+		TLSNextProto:    make(map[string]func(authority string, c *tls.Conn) http.RoundTripper),
+		DisableKeepAlives: true, // КРИТИЧЕСКИ ВАЖНО: запрещаем переиспользование соединений, чтобы избежать зависаний на "мертвых" сокетах
 	}
 
+	// Увеличиваем таймаут до 60 секунд для корректной работы Long Polling
 	pollingClient = &http.Client{
-		Timeout:   15 * time.Second, // Немного увеличили для надежности
+		Timeout:   60 * time.Second,
 		Transport: customTransport,
 	}
 	
@@ -301,7 +298,8 @@ func runPaymentPoller(chatID string, token string, clickTime time.Time) {
 				return
 			}
 			if checkPayment(chatID, clickTime) {
-				maxSendText(chatID, "✅ Оплата подтверждена! Начинаем ритуал...")
+				err := maxSendText(chatID, "✅ Оплата подтверждена! Начинаем ритуал...")
+				if err != nil { log.Printf("ERROR sending payment confirmed: %v", err) }
 				go startShuffleAndReading(chatID)
 				return
 			}
@@ -327,9 +325,7 @@ func runPaymentPoller(chatID string, token string, clickTime time.Time) {
 
 func startShuffleAndReading(chatID string) {
 	session := getSession(chatID)
-	if session == nil {
-		return
-	}
+	if session == nil { return }
 
 	session.Deck = generateDeck()
 	session.Step = "shuffling"
@@ -403,7 +399,14 @@ func handleUpdate(update map[string]interface{}) {
 	if text == "/start" || text == "🔮 Новый расклад" {
 		clearSession(chatID)
 		setSession(chatID, &UserSession{Step: "awaiting_question"})
-		maxSendText(chatID, "🔮 Добро пожаловать в Arcana AI!\n\nЗадайте ваш вопрос картам Таро (например: 'Что меня ждет в новом проекте?'):")
+		
+		// ДОБАВЛЕНО: Логирование успеха или ошибки отправки
+		err := maxSendText(chatID, "🔮 Добро пожаловать в Arcana AI!\n\nЗадайте ваш вопрос картам Таро (например: 'Что меня ждет в новом проекте?'):")
+		if err != nil {
+			log.Printf("ERROR sending start message to %s: %v", chatID, err)
+		} else {
+			log.Printf("SUCCESS: Sent start message to %s", chatID)
+		}
 		return
 	}
 
@@ -418,7 +421,12 @@ func handleUpdate(update map[string]interface{}) {
 				{"text": fmt.Sprintf("%s — %d₽", sp.Name, sp.Price), "payload": fmt.Sprintf("select_spread|%s|%d", sp.Name, sp.Price)},
 			})
 		}
-		maxSendKeyboard(chatID, "Отличный вопрос! Выберите тип расклада:", buttons)
+		err := maxSendKeyboard(chatID, "Отличный вопрос! Выберите тип расклада:", buttons)
+		if err != nil {
+			log.Printf("ERROR sending keyboard to %s: %v", chatID, err)
+		} else {
+			log.Printf("SUCCESS: Sent keyboard to %s", chatID)
+		}
 		return
 	}
 
@@ -436,7 +444,11 @@ func handleUpdate(update map[string]interface{}) {
 			maxAnswerCallback(callbackQueryID, "Расклад выбран")
 			msg := fmt.Sprintf("Вы выбрали: *%s*\n💰 Стоимость: *%d₽*\n\n📋 Номер платежа: %s\n⏰ Токен действителен 1 час\n\nПереведите сумму на карту: 2200 0000 0000 0000\n\nПосле перевода нажмите кнопку ниже.", session.SelectedSpread, session.SpreadPrice, session.PaymentToken)
 			buttons := [][]map[string]string{{{"text": "✅ Я оплатил", "payload": "check_payment"}}}
-			maxSendKeyboard(chatID, msg, buttons)
+			
+			err := maxSendKeyboard(chatID, msg, buttons)
+			if err != nil {
+				log.Printf("ERROR sending payment prompt to %s: %v", chatID, err)
+			}
 		}
 		return
 	}
@@ -544,7 +556,7 @@ func main() {
 		req.Header.Set("Accept", "application/json")
 		req.Host = "platform-api2.max.ru"
 
-		log.Printf("Sending polling request (timeout 15s, forced IPv4 & IP with correct SNI)...")
+		log.Printf("Sending polling request (timeout 60s for long polling)...")
 		resp, err := pollingClient.Do(req)
 		if err != nil {
 			log.Printf("Error polling: %v", err)
