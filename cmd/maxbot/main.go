@@ -145,21 +145,21 @@ func getEnv(key, defaultValue string) string {
 	return defaultValue
 }
 
-func clearSession(chatID string) {
+func clearSession(userID string) {
 	sessionsMutex.Lock()
-	delete(sessions, chatID)
+	delete(sessions, userID)
 	sessionsMutex.Unlock()
 }
 
-func getSession(chatID string) *UserSession {
+func getSession(userID string) *UserSession {
 	sessionsMutex.RLock()
 	defer sessionsMutex.RUnlock()
-	return sessions[chatID]
+	return sessions[userID]
 }
 
-func setSession(chatID string, session *UserSession) {
+func setSession(userID string, session *UserSession) {
 	sessionsMutex.Lock()
-	sessions[chatID] = session
+	sessions[userID] = session
 	sessionsMutex.Unlock()
 }
 
@@ -178,16 +178,16 @@ func generateDeck() []Card {
 	return deck
 }
 
-func simulatePaymentDelay(chatID string) {
+func simulatePaymentDelay(userID string) {
 	delay := time.Duration(3+mrand.Intn(3)) * time.Second
 	paymentSimMutex.Lock()
-	paymentSimDelay[chatID] = delay
+	paymentSimDelay[userID] = delay
 	paymentSimMutex.Unlock()
 }
 
-func checkPayment(chatID string, clickTime time.Time) bool {
+func checkPayment(userID string, clickTime time.Time) bool {
 	paymentSimMutex.RLock()
-	delay, exists := paymentSimDelay[chatID]
+	delay, exists := paymentSimDelay[userID]
 	paymentSimMutex.RUnlock()
 	if !exists {
 		delay = 3 * time.Second
@@ -216,19 +216,21 @@ func getCardCount(spread string) int {
 
 // --- MAX API Клиент ---
 
+// ИСПРАВЛЕНО: Используем user_id для отправки сообщений пользователям
 type maxMessageRequest struct {
-	ChatID      string        `json:"chat_id"`
+	UserID      *int64        `json:"user_id,omitempty"`
+	ChatID      *int64        `json:"chat_id,omitempty"`
 	Text        string        `json:"text,omitempty"`
 	Attachments []interface{} `json:"attachments,omitempty"`
 	Format      string        `json:"format,omitempty"`
 }
 
-func maxSendText(chatID, text string) error {
-	reqBody := maxMessageRequest{ChatID: chatID, Text: text, Format: "markdown"}
+func maxSendText(userID int64, text string) error {
+	reqBody := maxMessageRequest{UserID: &userID, Text: text, Format: "markdown"}
 	return maxAPIRequest("POST", "/messages", reqBody, nil)
 }
 
-func maxSendKeyboard(chatID, text string, buttons [][]map[string]string) error {
+func maxSendKeyboard(userID int64, text string, buttons [][]map[string]string) error {
 	attachments := []interface{}{
 		map[string]interface{}{
 			"type": "inline_keyboard",
@@ -237,7 +239,7 @@ func maxSendKeyboard(chatID, text string, buttons [][]map[string]string) error {
 			},
 		},
 	}
-	reqBody := maxMessageRequest{ChatID: chatID, Text: text, Attachments: attachments, Format: "markdown"}
+	reqBody := maxMessageRequest{UserID: &userID, Text: text, Attachments: attachments, Format: "markdown"}
 	return maxAPIRequest("POST", "/messages", reqBody, nil)
 }
 
@@ -284,7 +286,7 @@ func maxAPIRequest(method, path string, reqBody interface{}, respBody interface{
 
 // --- Логика бота ---
 
-func runPaymentPoller(chatID string, token string, clickTime time.Time) {
+func runPaymentPoller(userID int64, userStr string, token string, clickTime time.Time) {
 	ticker := time.NewTicker(PaymentPollInterval)
 	defer ticker.Stop()
 	timeout := time.After(PaymentCheckTimeout)
@@ -292,18 +294,18 @@ func runPaymentPoller(chatID string, token string, clickTime time.Time) {
 	for {
 		select {
 		case <-ticker.C:
-			session := getSession(chatID)
+			session := getSession(userStr)
 			if session == nil || session.PaymentToken != token {
 				return
 			}
-			if checkPayment(chatID, clickTime) {
-				err := maxSendText(chatID, "✅ Оплата подтверждена! Начинаем ритуал...")
+			if checkPayment(userStr, clickTime) {
+				err := maxSendText(userID, "✅ Оплата подтверждена! Начинаем ритуал...")
 				if err != nil { log.Printf("ERROR sending payment confirmed: %v", err) }
-				go startShuffleAndReading(chatID)
+				go startShuffleAndReading(userID, userStr)
 				return
 			}
 		case <-timeout:
-			session := getSession(chatID)
+			session := getSession(userStr)
 			if session != nil && session.PaymentToken == token {
 				remaining := PaymentTokenLifetime - time.Since(session.PaymentCreatedAt)
 				var msg string
@@ -311,58 +313,46 @@ func runPaymentPoller(chatID string, token string, clickTime time.Time) {
 					msg = fmt.Sprintf("⏳ Оплата не подтверждена за 10 минут. Токен действителен еще %d мин.", int(remaining.Minutes()))
 				} else {
 					msg = "⏳ Токен истёк. Начните заново с /start"
-					clearSession(chatID)
+					clearSession(userStr)
 				}
-				maxSendText(chatID, msg)
+				maxSendText(userID, msg)
 				session.PaymentPollingActive = false
-				setSession(chatID, session)
+				setSession(userStr, session)
 			}
 			return
 		}
 	}
 }
 
-func startShuffleAndReading(chatID string) {
-	session := getSession(chatID)
+func startShuffleAndReading(userID int64, userStr string) {
+	session := getSession(userStr)
 	if session == nil { return }
 
 	session.Deck = generateDeck()
 	session.Step = "shuffling"
-	setSession(chatID, session)
+	setSession(userStr, session)
 
-	maxSendText(chatID, "🌪️ Перемешиваем колоду...")
+	maxSendText(userID, "🌪️ Перемешиваем колоду...")
 	time.Sleep(1500 * time.Millisecond)
-	maxSendText(chatID, "🃏 Карты выравниваются и заряжаются вашим намерением...")
+	maxSendText(userID, "🃏 Карты выравниваются и заряжаются вашим намерением...")
 	time.Sleep(1500 * time.Millisecond)
 
 	buttons := [][]map[string]string{
 		{{"text": "✂️ Срезать колоду", "payload": "cut_deck"}},
 	}
-	maxSendKeyboard(chatID, "✨ Колода готова! Нажмите кнопку ниже, чтобы срезать колоду.", buttons)
+	maxSendKeyboard(userID, "✨ Колода готова! Нажмите кнопку ниже, чтобы срезать колоду.", buttons)
 }
 
 func handleUpdate(update map[string]interface{}) {
-	var chatID, text, callbackQueryID, callbackData string
+	var userID int64
+	var text, callbackQueryID, callbackData string
 	var isCallback bool
 
 	if msg, ok := update["message"].(map[string]interface{}); ok {
-		// ИСПРАВЛЕНО: Приоритетно берем chat_id из recipient (это ID чата, куда нужно отвечать)
-		if recipient, ok := msg["recipient"].(map[string]interface{}); ok {
-			if cid, ok := recipient["chat_id"].(float64); ok {
-				chatID = fmt.Sprintf("%.0f", cid)
-			} else if cid, ok := recipient["chat_id"].(string); ok {
-				chatID = cid
-			}
-		}
-		
-		// Fallback: если по какой-то причине его нет, пробуем sender.user_id
-		if chatID == "" {
-			if sender, ok := msg["sender"].(map[string]interface{}); ok {
-				if uid, ok := sender["user_id"].(float64); ok {
-					chatID = fmt.Sprintf("%.0f", uid)
-				} else if uid, ok := sender["user_id"].(string); ok {
-					chatID = uid
-				}
+		// ИСПРАВЛЕНО: Берем user_id из sender, так как именно ему мы должны ответить
+		if sender, ok := msg["sender"].(map[string]interface{}); ok {
+			if uid, ok := sender["user_id"].(float64); ok {
+				userID = int64(uid)
 			}
 		}
 
@@ -381,33 +371,31 @@ func handleUpdate(update map[string]interface{}) {
 		if data, ok := cb["payload"].(string); ok {
 			callbackData = data
 		}
-		// Для callback тоже берем chat_id из вложенного message.recipient
 		if msg, ok := cb["message"].(map[string]interface{}); ok {
-			if recipient, ok := msg["recipient"].(map[string]interface{}); ok {
-				if cid, ok := recipient["chat_id"].(float64); ok {
-					chatID = fmt.Sprintf("%.0f", cid)
-				} else if cid, ok := recipient["chat_id"].(string); ok {
-					chatID = cid
+			if sender, ok := msg["sender"].(map[string]interface{}); ok {
+				if uid, ok := sender["user_id"].(float64); ok {
+					userID = int64(uid)
 				}
 			}
 		}
 	}
 
-	if chatID == "" {
+	if userID == 0 {
 		return
 	}
 
-	session := getSession(chatID)
+	userStr := fmt.Sprintf("%d", userID)
+	session := getSession(userStr)
 
 	if text == "/start" || text == "🔮 Новый расклад" {
-		clearSession(chatID)
-		setSession(chatID, &UserSession{Step: "awaiting_question"})
+		clearSession(userStr)
+		setSession(userStr, &UserSession{Step: "awaiting_question"})
 		
-		err := maxSendText(chatID, "🔮 Добро пожаловать в Arcana AI!\n\nЗадайте ваш вопрос картам Таро (например: 'Что меня ждет в новом проекте?'):")
+		err := maxSendText(userID, "🔮 Добро пожаловать в Arcana AI!\n\nЗадайте ваш вопрос картам Таро (например: 'Что меня ждет в новом проекте?'):")
 		if err != nil {
-			log.Printf("ERROR sending start message to %s: %v", chatID, err)
+			log.Printf("ERROR sending start message to %d: %v", userID, err)
 		} else {
-			log.Printf("SUCCESS: Sent start message to %s", chatID)
+			log.Printf("SUCCESS: Sent start message to %d", userID)
 		}
 		return
 	}
@@ -415,7 +403,7 @@ func handleUpdate(update map[string]interface{}) {
 	if session != nil && session.Step == "awaiting_question" && text != "" {
 		session.Question = text
 		session.Step = "awaiting_spread"
-		setSession(chatID, session)
+		setSession(userStr, session)
 
 		var buttons [][]map[string]string
 		for _, sp := range availableSpreads {
@@ -423,11 +411,11 @@ func handleUpdate(update map[string]interface{}) {
 				{"text": fmt.Sprintf("%s — %d₽", sp.Name, sp.Price), "payload": fmt.Sprintf("select_spread|%s|%d", sp.Name, sp.Price)},
 			})
 		}
-		err := maxSendKeyboard(chatID, "Отличный вопрос! Выберите тип расклада:", buttons)
+		err := maxSendKeyboard(userID, "Отличный вопрос! Выберите тип расклада:", buttons)
 		if err != nil {
-			log.Printf("ERROR sending keyboard to %s: %v", chatID, err)
+			log.Printf("ERROR sending keyboard to %d: %v", userID, err)
 		} else {
-			log.Printf("SUCCESS: Sent keyboard to %s", chatID)
+			log.Printf("SUCCESS: Sent keyboard to %d", userID)
 		}
 		return
 	}
@@ -440,18 +428,18 @@ func handleUpdate(update map[string]interface{}) {
 			session.PaymentToken = uuid.New().String()
 			session.PaymentCreatedAt = time.Now()
 			session.Step = "awaiting_payment"
-			setSession(chatID, session)
-			simulatePaymentDelay(chatID)
+			setSession(userStr, session)
+			simulatePaymentDelay(userStr)
 
 			maxAnswerCallback(callbackQueryID, "Расклад выбран")
 			msg := fmt.Sprintf("Вы выбрали: *%s*\n💰 Стоимость: *%d₽*\n\n📋 Номер платежа: %s\n⏰ Токен действителен 1 час\n\nПереведите сумму на карту: 2200 0000 0000 0000\n\nПосле перевода нажмите кнопку ниже.", session.SelectedSpread, session.SpreadPrice, session.PaymentToken)
 			buttons := [][]map[string]string{{{"text": "✅ Я оплатил", "payload": "check_payment"}}}
 			
-			err := maxSendKeyboard(chatID, msg, buttons)
+			err := maxSendKeyboard(userID, msg, buttons)
 			if err != nil {
-				log.Printf("ERROR sending payment prompt to %s: %v", chatID, err)
+				log.Printf("ERROR sending payment prompt to %d: %v", userID, err)
 			} else {
-				log.Printf("SUCCESS: Sent payment prompt to %s", chatID)
+				log.Printf("SUCCESS: Sent payment prompt to %d", userID)
 			}
 		}
 		return
@@ -460,8 +448,8 @@ func handleUpdate(update map[string]interface{}) {
 	if isCallback && callbackData == "check_payment" {
 		if time.Since(session.PaymentCreatedAt) > PaymentTokenLifetime {
 			maxAnswerCallback(callbackQueryID, "Токен истёк")
-			maxSendText(chatID, "⏳ Токен истёк. Начните заново с /start")
-			clearSession(chatID)
+			maxSendText(userID, "⏳ Токен истёк. Начните заново с /start")
+			clearSession(userStr)
 			return
 		}
 		if session.PaymentPollingActive {
@@ -471,11 +459,11 @@ func handleUpdate(update map[string]interface{}) {
 
 		session.PaymentClickTime = time.Now()
 		session.PaymentPollingActive = true
-		setSession(chatID, session)
+		setSession(userStr, session)
 
 		maxAnswerCallback(callbackQueryID, "Проверяем оплату...")
-		maxSendText(chatID, "⏳ Проверяем оплату в системе...")
-		go runPaymentPoller(chatID, session.PaymentToken, session.PaymentClickTime)
+		maxSendText(userID, "⏳ Проверяем оплату в системе...")
+		go runPaymentPoller(userID, userStr, session.PaymentToken, session.PaymentClickTime)
 		return
 	}
 
@@ -489,7 +477,7 @@ func handleUpdate(update map[string]interface{}) {
 		cutIndex := mrand.Intn(len(deck))
 		deck = append(deck[cutIndex:], deck[:cutIndex]...)
 
-		maxSendText(chatID, "🔮 Выкладываем карты на стол...")
+		maxSendText(userID, "🔮 Выкладываем карты на стол...")
 
 		cardCount := getCardCount(selectedSpread)
 		var selectedCards []CardRequest
@@ -505,33 +493,33 @@ func handleUpdate(update map[string]interface{}) {
 			cardTexts = append(cardTexts, fmt.Sprintf("🃏 Позиция %d: %s%s", i+1, card.Name, reversedStr))
 		}
 
-		maxSendText(chatID, "Выпавшие карты:\n\n"+strings.Join(cardTexts, "\n"))
-		maxSendText(chatID, "⏳ Запрашиваем мудрость ИИ...")
+		maxSendText(userID, "Выпавшие карты:\n\n"+strings.Join(cardTexts, "\n"))
+		maxSendText(userID, "⏳ Запрашиваем мудрость ИИ...")
 
 		reqBody := ReadSpreadRequest{Question: question, Spread: selectedSpread, Cards: selectedCards}
 		jsonData, _ := json.Marshal(reqBody)
 
 		resp, err := insecureClient.Post(backendURL+"/api/read-spread", "application/json", bytes.NewBuffer(jsonData))
-		clearSession(chatID)
+		clearSession(userStr)
 
 		if err != nil || resp == nil || resp.StatusCode != http.StatusOK {
-			maxSendText(chatID, "❌ Ошибка при обращении к оракулу.")
+			maxSendText(userID, "❌ Ошибка при обращении к оракулу.")
 			return
 		}
 
 		var result ReadSpreadResponse
 		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-			maxSendText(chatID, "❌ Ошибка при обработке ответа от ИИ.")
+			maxSendText(userID, "❌ Ошибка при обработке ответа от ИИ.")
 			return
 		}
 
 		answerText := fmt.Sprintf("🔮 Расклад: %s\n📜 Вопрос: %s\n\n%s\n\nХотите задать еще один вопрос? Напишите /start", selectedSpread, question, result.Interpretation)
-		maxSendText(chatID, answerText)
+		maxSendText(userID, answerText)
 		return
 	}
 
 	if session == nil {
-		maxSendText(chatID, "Пожалуйста, напишите /start или '🔮 Новый расклад' для начала.")
+		maxSendText(userID, "Пожалуйста, напишите /start или '🔮 Новый расклад' для начала.")
 	}
 }
 
