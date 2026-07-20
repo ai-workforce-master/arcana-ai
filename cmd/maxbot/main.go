@@ -216,18 +216,13 @@ func getCardCount(spread string) int {
 
 // --- MAX API Клиент ---
 
-// ИСПРАВЛЕНО: Используем user_id для отправки сообщений пользователям
-type maxMessageRequest struct {
-	UserID      *int64        `json:"user_id,omitempty"`
-	ChatID      *int64        `json:"chat_id,omitempty"`
-	Text        string        `json:"text,omitempty"`
-	Attachments []interface{} `json:"attachments,omitempty"`
-	Format      string        `json:"format,omitempty"`
-}
-
+// ИСПРАВЛЕНО: user_id передается в URL как query-параметр, а не в JSON-теле
 func maxSendText(userID int64, text string) error {
-	reqBody := maxMessageRequest{UserID: &userID, Text: text, Format: "markdown"}
-	return maxAPIRequest("POST", "/messages", reqBody, nil)
+	reqBody := map[string]interface{}{
+		"text":   text,
+		"format": "markdown",
+	}
+	return maxAPIRequest("POST", fmt.Sprintf("/messages?user_id=%d", userID), reqBody, nil)
 }
 
 func maxSendKeyboard(userID int64, text string, buttons [][]map[string]string) error {
@@ -239,12 +234,16 @@ func maxSendKeyboard(userID int64, text string, buttons [][]map[string]string) e
 			},
 		},
 	}
-	reqBody := maxMessageRequest{UserID: &userID, Text: text, Attachments: attachments, Format: "markdown"}
-	return maxAPIRequest("POST", "/messages", reqBody, nil)
+	reqBody := map[string]interface{}{
+		"text":        text,
+		"attachments": attachments,
+		"format":      "markdown",
+	}
+	return maxAPIRequest("POST", fmt.Sprintf("/messages?user_id=%d", userID), reqBody, nil)
 }
 
 func maxAnswerCallback(callbackQueryID, text string) error {
-	reqBody := map[string]string{
+	reqBody := map[string]interface{}{
 		"callback_query_id": callbackQueryID,
 		"text":              text,
 	}
@@ -349,7 +348,6 @@ func handleUpdate(update map[string]interface{}) {
 	var isCallback bool
 
 	if msg, ok := update["message"].(map[string]interface{}); ok {
-		// ИСПРАВЛЕНО: Берем user_id из sender, так как именно ему мы должны ответить
 		if sender, ok := msg["sender"].(map[string]interface{}); ok {
 			if uid, ok := sender["user_id"].(float64); ok {
 				userID = int64(uid)
