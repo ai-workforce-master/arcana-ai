@@ -298,7 +298,6 @@ func maxSendKeyboard(userID int64, text string, buttons [][]map[string]interface
 	return maxAPIRequest("POST", fmt.Sprintf("/messages?user_id=%d", userID), reqBody, nil)
 }
 
-// ИСПРАВЛЕНО: тип вложения изменен с "photo" на "image", так как загрузка производилась с ?type=image
 func maxSendPhotoByToken(userID int64, text, token string) error {
 	attachments := []interface{}{
 		map[string]interface{}{
@@ -683,13 +682,15 @@ func handleUpdate(update map[string]interface{}) {
 			}
 		}
 
-		// 3. Отправляем вывод
+		// 3. Отправляем вывод (если он есть)
 		conclusion := strings.TrimSpace(result.Conclusion)
 		if conclusion != "" {
 			maxSendText(userID, conclusion)
-		} else {
-			maxSendText(userID, "_Хотите задать еще один вопрос? Напишите /start_")
+			time.Sleep(500 * time.Millisecond)
 		}
+
+		// 4. Финальное сообщение с предложением начать заново
+		maxSendText(userID, "✨ Если у вас есть ещё вопросы, просто напишите /start, и мы проведём новый расклад!")
 		
 		log.Printf("DEBUG: All cards sent to user %d", userID)
 		return
