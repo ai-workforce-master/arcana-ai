@@ -11,6 +11,7 @@ import (
 	mrand "math/rand"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -31,6 +32,11 @@ type CardRequest struct {
 	IsReversed bool   `json:"is_reversed"`
 }
 
+type CardInterpretation struct {
+	Card           CardRequest `json:"card"`
+	Interpretation string      `json:"interpretation"`
+}
+
 type ReadSpreadRequest struct {
 	Question string        `json:"question"`
 	Spread   string        `json:"spread"`
@@ -38,7 +44,7 @@ type ReadSpreadRequest struct {
 }
 
 type ReadSpreadResponse struct {
-	Interpretation string `json:"interpretation"`
+	Cards []CardInterpretation `json:"cards"`
 }
 
 type UserSession struct {
@@ -93,7 +99,7 @@ var (
 	}
 
 	insecureClient = &http.Client{
-		Timeout:   15 * time.Second,
+		Timeout:   30 * time.Second,
 		Transport: customTransport,
 	}
 )
@@ -108,10 +114,10 @@ var standardDeck = []string{
 	"Шут", "Маг", "Верховная Жрица", "Императрица", "Император", "Иерофант", "Влюбленные", "Колесница", "Сила", "Отшельник",
 	"Колесо Фортуны", "Справедливость", "Повешенный", "Смерть", "Умеренность", "Дьявол", "Башня", "Звезда", "Луна", "Солнце",
 	"Суд", "Мир",
-	"Туз Жезлов", "Двойка Жезлов", "Тройка Жезлов", "Четверка Жезлов", "Пятерка Жезлов", "Шестерка Жезлов", "Семерка Жезлов", "Восьмерка Жезлов", "Девятка Жезлов", "Десятка Жезлов", "Паж Жезлов", "Рыцарь Жезлов", "Королева Жезлов", "Король Жезлов",
 	"Туз Кубков", "Двойка Кубков", "Тройка Кубков", "Четверка Кубков", "Пятерка Кубков", "Шестерка Кубков", "Семерка Кубков", "Восьмерка Кубков", "Девятка Кубков", "Десятка Кубков", "Паж Кубков", "Рыцарь Кубков", "Королева Кубков", "Король Кубков",
-	"Туз Мечей", "Двойка Мечей", "Тройка Мечей", "Четверка Мечей", "Пятерка Мечей", "Шестерка Мечей", "Семерка Мечей", "Восьмерка Мечей", "Девятка Мечей", "Десятка Мечей", "Паж Мечей", "Рыцарь Мечей", "Королева Мечей", "Король Мечей",
 	"Туз Пентаклей", "Двойка Пентаклей", "Тройка Пентаклей", "Четверка Пентаклей", "Пятерка Пентаклей", "Шестерка Пентаклей", "Семерка Пентаклей", "Восьмерка Пентаклей", "Девятка Пентаклей", "Десятка Пентаклей", "Паж Пентаклей", "Рыцарь Пентаклей", "Королева Пентаклей", "Король Пентаклей",
+	"Туз Мечей", "Двойка Мечей", "Тройка Мечей", "Четверка Мечей", "Пятерка Мечей", "Шестерка Мечей", "Семерка Мечей", "Восьмерка Мечей", "Девятка Мечей", "Десятка Мечей", "Паж Мечей", "Рыцарь Мечей", "Королева Мечей", "Король Мечей",
+	"Туз Жезлов", "Двойка Жезлов", "Тройка Жезлов", "Четверка Жезлов", "Пятерка Жезлов", "Шестерка Жезлов", "Семерка Жезлов", "Восьмерка Жезлов", "Девятка Жезлов", "Десятка Жезлов", "Паж Жезлов", "Рыцарь Жезлов", "Королева Жезлов", "Король Жезлов",
 }
 
 type SpreadOption struct {
@@ -214,6 +220,72 @@ func getCardCount(spread string) int {
 	return 3
 }
 
+// --- Функции для работы с изображениями ---
+
+// getCardImageURL возвращает URL изображения карты.
+// Ожидается, что карты хранятся на сервере и названы RWS_00000.jpg - RWS_00077.jpg
+func getCardImageURL(cardName string, isReversed bool) string {
+	cardNumber := getCardNumber(cardName)
+	if cardNumber >= 0 {
+		// ЗАМЕНИТЕ на ваш домен!
+		baseURL := "https://ai-arcana.ru/cards"
+		return fmt.Sprintf("%s/RWS_%05d.jpg", baseURL, cardNumber)
+	}
+	
+	// Заглушка, если карта не найдена
+	return "https://placehold.co/400x600/1a1a2e/FFF?text=Card+Not+Found"
+}
+
+// getCardNumber возвращает номер карты в колоде (0-77) согласно порядку:
+// 0-21: Старшие арканы
+// 22-35: Кубки
+// 36-49: Пентакли
+// 50-63: Мечи
+// 64-77: Жезлы
+func getCardNumber(cardName string) int {
+	cardMap := map[string]int{
+		// Старшие арканы (0-21)
+		"Шут": 0, "Маг": 1, "Верховная Жрица": 2, "Императрица": 3, 
+		"Император": 4, "Иерофант": 5, "Влюбленные": 6, "Колесница": 7, 
+		"Сила": 8, "Отшельник": 9, "Колесо Фортуны": 10, "Справедливость": 11, 
+		"Повешенный": 12, "Смерть": 13, "Умеренность": 14, "Дьявол": 15, 
+		"Башня": 16, "Звезда": 17, "Луна": 18, "Солнце": 19, "Суд": 20, "Мир": 21,
+		
+		// Кубки (22-35)
+		"Туз Кубков": 22, "Двойка Кубков": 23, "Тройка Кубков": 24, 
+		"Четверка Кубков": 25, "Пятерка Кубков": 26, "Шестерка Кубков": 27, 
+		"Семерка Кубков": 28, "Восьмерка Кубков": 29, "Девятка Кубков": 30, 
+		"Десятка Кубков": 31, "Паж Кубков": 32, "Рыцарь Кубков": 33, 
+		"Королева Кубков": 34, "Король Кубков": 35,
+		
+		// Пентакли (36-49)
+		"Туз Пентаклей": 36, "Двойка Пентаклей": 37, "Тройка Пентаклей": 38, 
+		"Четверка Пентаклей": 39, "Пятерка Пентаклей": 40, "Шестерка Пентаклей": 41, 
+		"Семерка Пентаклей": 42, "Восьмерка Пентаклей": 43, "Девятка Пентаклей": 44, 
+		"Десятка Пентаклей": 45, "Паж Пентаклей": 46, "Рыцарь Пентаклей": 47, 
+		"Королева Пентаклей": 48, "Король Пентаклей": 49,
+		
+		// Мечи (50-63)
+		"Туз Мечей": 50, "Двойка Мечей": 51, "Тройка Мечей": 52, 
+		"Четверка Мечей": 53, "Пятерка Мечей": 54, "Шестерка Мечей": 55, 
+		"Семерка Мечей": 56, "Восьмерка Мечей": 57, "Девятка Мечей": 58, 
+		"Десятка Мечей": 59, "Паж Мечей": 60, "Рыцарь Мечей": 61, 
+		"Королева Мечей": 62, "Король Мечей": 63,
+		
+		// Жезлы (64-77)
+		"Туз Жезлов": 64, "Двойка Жезлов": 65, "Тройка Жезлов": 66, 
+		"Четверка Жезлов": 67, "Пятерка Жезлов": 68, "Шестерка Жезлов": 69, 
+		"Семерка Жезлов": 70, "Восьмерка Жезлов": 71, "Девятка Жезлов": 72, 
+		"Десятка Жезлов": 73, "Паж Жезлов": 74, "Рыцарь Жезлов": 75, 
+		"Королева Жезлов": 76, "Король Жезлов": 77,
+	}
+	
+	if number, exists := cardMap[cardName]; exists {
+		return number
+	}
+	return -1 // Карта не найдена
+}
+
 // --- MAX API Клиент ---
 
 func maxSendText(userID int64, text string) error {
@@ -241,7 +313,24 @@ func maxSendKeyboard(userID int64, text string, buttons [][]map[string]interface
 	return maxAPIRequest("POST", fmt.Sprintf("/messages?user_id=%d", userID), reqBody, nil)
 }
 
-// ИСПРАВЛЕНО: callback_id передается как query-параметр, а не в теле JSON
+// Отправка сообщения с прикрепленным фото
+func maxSendPhoto(userID int64, text, imageURL string) error {
+	attachments := []interface{}{
+		map[string]interface{}{
+			"type": "photo",
+			"payload": map[string]interface{}{
+				"url": imageURL,
+			},
+		},
+	}
+	reqBody := map[string]interface{}{
+		"text":        text,
+		"attachments": attachments,
+		"format":      "markdown",
+	}
+	return maxAPIRequest("POST", fmt.Sprintf("/messages?user_id=%d", userID), reqBody, nil)
+}
+
 func maxAnswerCallback(callbackQueryID, notificationText string) error {
 	reqBody := map[string]interface{}{
 		"notification": notificationText,
@@ -308,7 +397,7 @@ func runPaymentPoller(userID int64, userStr string, token string, clickTime time
 				remaining := PaymentTokenLifetime - time.Since(session.PaymentCreatedAt)
 				var msg string
 				if remaining > 0 {
-					msg = fmt.Sprintf("⏳ Оплата не подтверждена за 10 минут. Токен действителен еще %d мин.", int(remaining.Minutes()))
+					msg = fmt.Sprintf(" Оплата не подтверждена за 10 минут. Токен действителен еще %d мин.", int(remaining.Minutes()))
 				} else {
 					msg = "⏳ Токен истёк. Начните заново с /start"
 					clearSession(userStr)
@@ -371,7 +460,6 @@ func handleUpdate(update map[string]interface{}) {
 	} else if updateType == "message_callback" || update["callback"] != nil {
 		isCallback = true
 		if cb, ok := update["callback"].(map[string]interface{}); ok {
-			// ИСПРАВЛЕНО: Правильное имя поля callback_id
 			if id, ok := cb["callback_id"].(string); ok {
 				callbackQueryID = id
 			} else if id, ok := cb["callback_id"].(float64); ok {
@@ -382,7 +470,6 @@ func handleUpdate(update map[string]interface{}) {
 				callbackData = data
 			}
 			
-			// ИСПРАВЛЕНО: user_id находится внутри объекта "user"
 			if user, ok := cb["user"].(map[string]interface{}); ok {
 				if uid, ok := user["user_id"].(float64); ok {
 					userID = int64(uid)
@@ -451,7 +538,7 @@ func handleUpdate(update map[string]interface{}) {
 			simulatePaymentDelay(userStr)
 
 			maxAnswerCallback(callbackQueryID, "Расклад выбран")
-			msg := fmt.Sprintf("Вы выбрали: *%s*\n💰 Стоимость: *%d₽*\n\n📋 Номер платежа: %s\n⏰ Токен действителен 1 час\n\nПереведите сумму на карту: 2200 0000 0000 0000\n\nПосле перевода нажмите кнопку ниже.", session.SelectedSpread, session.SpreadPrice, session.PaymentToken)
+			msg := fmt.Sprintf("Вы выбрали: *%s*\n Стоимость: *%d₽*\n\n📋 Номер платежа: %s\n⏰ Токен действителен 1 час\n\nПереведите сумму на карту: 2200 0000 0000 0000\n\nПосле перевода нажмите кнопку ниже.", session.SelectedSpread, session.SpreadPrice, session.PaymentToken)
 			
 			buttons := [][]map[string]interface{}{
 				{
@@ -520,31 +607,94 @@ func handleUpdate(update map[string]interface{}) {
 			if card.IsReversed {
 				reversedStr = " 🔄 (Перевёрнутая)"
 			}
-			cardTexts = append(cardTexts, fmt.Sprintf("🃏 Позиция %d: %s%s", i+1, card.Name, reversedStr))
+			cardTexts = append(cardTexts, fmt.Sprintf(" Позиция %d: %s%s", i+1, card.Name, reversedStr))
 		}
 
 		maxSendText(userID, "Выпавшие карты:\n\n"+strings.Join(cardTexts, "\n"))
 		maxSendText(userID, "⏳ Запрашиваем мудрость ИИ...")
 
+		log.Printf("DEBUG: Preparing backend request for user %d", userID)
 		reqBody := ReadSpreadRequest{Question: question, Spread: selectedSpread, Cards: selectedCards}
 		jsonData, _ := json.Marshal(reqBody)
+		targetURL := backendURL + "/api/read-spread"
+		log.Printf("DEBUG: Backend URL: %s", targetURL)
 
-		resp, err := insecureClient.Post(backendURL+"/api/read-spread", "application/json", bytes.NewBuffer(jsonData))
+		log.Printf("DEBUG: Calling backend...")
+		resp, err := insecureClient.Post(targetURL, "application/json", bytes.NewBuffer(jsonData))
+		log.Printf("DEBUG: Backend call finished. err=%v, resp=%v", err, resp)
+		
 		clearSession(userStr)
 
-		if err != nil || resp == nil || resp.StatusCode != http.StatusOK {
+		if err != nil {
+			log.Printf("ERROR: Backend request failed: %v", err)
+			maxSendText(userID, "❌ Ошибка при обращении к оракулу.")
+			return
+		}
+		if resp == nil || resp.StatusCode != http.StatusOK {
+			status := 0
+			if resp != nil {
+				status = resp.StatusCode
+			}
+			log.Printf("ERROR: Backend returned non-200 status: %d", status)
 			maxSendText(userID, "❌ Ошибка при обращении к оракулу.")
 			return
 		}
 
+		log.Printf("DEBUG: Decoding backend response...")
 		var result ReadSpreadResponse
 		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			log.Printf("ERROR: Failed to decode backend response: %v", err)
 			maxSendText(userID, "❌ Ошибка при обработке ответа от ИИ.")
 			return
 		}
+		log.Printf("DEBUG: Backend response decoded successfully.")
 
-		answerText := fmt.Sprintf("🔮 Расклад: %s\n📜 Вопрос: %s\n\n%s\n\nХотите задать еще один вопрос? Напишите /start", selectedSpread, question, result.Interpretation)
-		maxSendText(userID, answerText)
+		// Отправляем каждую карту с её интерпретацией по очереди
+		for i, cardInterp := range result.Cards {
+			cardName := cardInterp.Card.Name
+			isReversed := cardInterp.Card.IsReversed
+			
+			// Формируем заголовок позиции
+			positionText := ""
+			if len(result.Cards) > 1 {
+				positionText = fmt.Sprintf("🃏 **Позиция %d из %d**\n", i+1, len(result.Cards))
+			}
+			
+			// Добавляем информацию о перевёрнутости
+			reversedNote := ""
+			if isReversed {
+				reversedNote = " 🔄 *(Перевёрнутая)*"
+			}
+			
+			// Формируем полный текст для этой карты
+			cardText := fmt.Sprintf("%s**%s**%s\n\n%s", 
+				positionText, 
+				cardName, 
+				reversedNote,
+				cardInterp.Interpretation)
+			
+			// Получаем URL изображения карты
+			cardImageURL := getCardImageURL(cardName, isReversed)
+			
+			log.Printf("DEBUG: Sending card %d/%d (%s) with photo to user %d", i+1, len(result.Cards), cardName, userID)
+			
+			// Отправляем карту с картинкой
+			err := maxSendPhoto(userID, cardText, cardImageURL)
+			if err != nil {
+				log.Printf("ERROR sending card %d to %d: %v. Trying text only...", i+1, userID, err)
+				maxSendText(userID, cardText)
+			}
+			
+			// Небольшая пауза между картами (чтобы не спамить)
+			if i < len(result.Cards)-1 {
+				time.Sleep(1500 * time.Millisecond)
+			}
+		}
+
+		// Финальное сообщение
+		finalMsg := "_Хотите задать еще один вопрос? Напишите /start_"
+		maxSendText(userID, finalMsg)
+		log.Printf("DEBUG: All cards sent to user %d", userID)
 		return
 	}
 
