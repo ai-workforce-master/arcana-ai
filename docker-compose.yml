@@ -125,19 +125,18 @@ services:
   frontend:
     build:
       context: ./frontend
-      dockerfile: Dockerfile.frontend
+      dockerfile: Dockerfile
     container_name: arcana-frontend
     ports:
-      - "15173:5173"
-    volumes:
-      - ./frontend:/app
-      - /app/node_modules
+      - "3000:3000"
     environment:
-      - VITE_API_URL=http://localhost:18080
+      - BACKEND_URL=http://backend:8080
     depends_on:
       - backend
+    restart: unless-stopped
     networks:
-      - arcana-net
+      - arcana-network
+
 
 volumes:
   postgres_data:

@@ -1,0 +1,5 @@
+# Добавьте это в .gitignore, если там этого нет
+frontend/node_modules/
+.next/
+.env.local
+*.log
