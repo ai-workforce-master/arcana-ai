@@ -11,7 +11,6 @@ import (
 	mrand "math/rand"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -75,6 +74,9 @@ var (
 	paymentSimMutex sync.RWMutex
 
 	workingMaxIP = "155.212.204.75"
+
+	// Хранилище токенов для карт
+	cardTokens = make(map[string]string)
 
 	customTransport = &http.Transport{
 		Proxy: http.ProxyFromEnvironment,
@@ -153,6 +155,19 @@ func getEnv(key, defaultValue string) string {
 	return defaultValue
 }
 
+func loadCardTokens() {
+	data, err := os.ReadFile("cards_tokens.json")
+	if err != nil {
+		log.Printf("WARNING: Could not load cards_tokens.json: %v. Images will not be sent.", err)
+		return
+	}
+	if err := json.Unmarshal(data, &cardTokens); err != nil {
+		log.Printf("WARNING: Could not parse cards_tokens.json: %v", err)
+		return
+	}
+	log.Printf("SUCCESS: Loaded %d card tokens from cards_tokens.json", len(cardTokens))
+}
+
 func clearSession(userID string) {
 	sessionsMutex.Lock()
 	delete(sessions, userID)
@@ -222,18 +237,6 @@ func getCardCount(spread string) int {
 	return 3
 }
 
-// --- Функции для работы с изображениями ---
-
-func getCardImageURL(cardName string, isReversed bool) string {
-	cardNumber := getCardNumber(cardName)
-	if cardNumber >= 0 {
-		// УКАЖИТЕ ЗДЕСЬ ВАШ ДОМЕН!
-		baseURL := "https://ai-arcana.ru/cards"
-		return fmt.Sprintf("%s/RWS_%05d.jpg", baseURL, cardNumber)
-	}
-	return "https://placehold.co/400x600/1a1a2e/FFF?text=Card+Not+Found"
-}
-
 func getCardNumber(cardName string) int {
 	cardMap := map[string]int{
 		"Шут": 0, "Маг": 1, "Верховная Жрица": 2, "Императрица": 3, 
@@ -295,12 +298,13 @@ func maxSendKeyboard(userID int64, text string, buttons [][]map[string]interface
 	return maxAPIRequest("POST", fmt.Sprintf("/messages?user_id=%d", userID), reqBody, nil)
 }
 
-func maxSendPhoto(userID int64, text, imageURL string) error {
+// НОВАЯ ФУНКЦИЯ: Отправка фото по токену MAX API
+func maxSendPhotoByToken(userID int64, text, token string) error {
 	attachments := []interface{}{
 		map[string]interface{}{
 			"type": "photo",
 			"payload": map[string]interface{}{
-				"url": imageURL,
+				"token": token,
 			},
 		},
 	}
@@ -636,14 +640,13 @@ func handleUpdate(update map[string]interface{}) {
 			time.Sleep(1000 * time.Millisecond)
 		}
 
-		// 2. Отправляем каждую карту с её интерпретацией и картинкой
+		// 2. Отправляем каждую карту с её интерпретацией и картинкой (по токену)
 		for i, cardInterp := range result.Cards {
 			cardName := cardInterp.Card.Name
 			isReversed := cardInterp.Card.IsReversed
 			
 			positionText := ""
 			if len(result.Cards) > 1 {
-				// Получаем позицию из запроса (упрощенно берем из стандартного списка или генерируем)
 				positionText = fmt.Sprintf("**Позиция %d**\n", i+1)
 			}
 			
@@ -653,13 +656,25 @@ func handleUpdate(update map[string]interface{}) {
 			}
 			
 			cardText := fmt.Sprintf("%s**%s**%s\n\n%s", positionText, cardName, reversedNote, cardInterp.Interpretation)
-			cardImageURL := getCardImageURL(cardName, isReversed)
 			
-			log.Printf("DEBUG: Sending card %d/%d (%s) with photo", i+1, len(result.Cards), cardName)
+			// Получаем токен картинки
+			cardNumber := getCardNumber(cardName)
+			var photoToken string
+			if cardNumber >= 0 {
+				filename := fmt.Sprintf("RWS_%05d.jpg", cardNumber)
+				photoToken = cardTokens[filename]
+			}
 			
-			err := maxSendPhoto(userID, cardText, cardImageURL)
-			if err != nil {
-				log.Printf("ERROR sending card %d: %v. Trying text only...", i+1, err)
+			log.Printf("DEBUG: Sending card %d/%d (%s)", i+1, len(result.Cards), cardName)
+			
+			if photoToken != "" {
+				err := maxSendPhotoByToken(userID, cardText, photoToken)
+				if err != nil {
+					log.Printf("ERROR sending card %d with photo: %v. Trying text only...", i+1, err)
+					maxSendText(userID, cardText)
+				}
+			} else {
+				log.Printf("WARNING: No token found for card %s, sending text only", cardName)
 				maxSendText(userID, cardText)
 			}
 			
@@ -696,6 +711,9 @@ func main() {
 	if maxBotToken == "" {
 		log.Fatal("MAX_BOT_TOKEN is not set")
 	}
+
+	// Загружаем токены картинок при старте
+	loadCardTokens()
 
 	log.Printf("Starting MAX Bot...")
 	log.Printf("MAX_API_BASE_URL: %s", maxAPIBaseURL)
