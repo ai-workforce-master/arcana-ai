@@ -23,9 +23,8 @@ func NewHandler(cfg *config.Config) (*Handler, error) {
 		return nil, err
 	}
 
-	// Настройка клиента для работы через AITunnel
 	openaiConfig := openai.DefaultConfig(cfg.AITunnelAPIKey)
-	openaiConfig.BaseURL = cfg.AITunnelBaseURL // Указываем endpoint AITunnel
+	openaiConfig.BaseURL = cfg.AITunnelBaseURL
 	
 	openAICli := openai.NewClientWithConfig(openaiConfig)
 
@@ -85,6 +84,18 @@ type EnrichedCardData struct {
 	IsReversed bool
 }
 
+// НОВЫЕ СТРУКТУРЫ ДЛЯ ПОШАГОВОГО ОТВЕТА
+type CardInterpretation struct {
+	Card           CardRequest `json:"card"`
+	Interpretation string      `json:"interpretation"`
+}
+
+type ReadSpreadResponse struct {
+	Intro      string               `json:"intro"`
+	Cards      []CardInterpretation `json:"cards"`
+	Conclusion string               `json:"conclusion"`
+}
+
 func (h *Handler) ReadSpread(c *gin.Context) {
 	var req ReadSpreadRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -115,15 +126,14 @@ func (h *Handler) ReadSpread(c *gin.Context) {
 
 	prompt := buildLLMPrompt(req.Question, req.Spread, enrichedCards)
 
-	// === ВЫЗОВ LLM ЧЕРЕЗ AITUNNEL ===
 	resp, err := h.openAICli.CreateChatCompletion(
 		c.Request.Context(),
 		openai.ChatCompletionRequest{
-			Model: "gpt-4o", // Или другая модель, доступная в вашем AITunnel (например, "gpt-3.5-turbo")
+			Model: "gpt-4o",
 			Messages: []openai.ChatCompletionMessage{
 				{
 					Role:    openai.ChatMessageRoleSystem,
-					Content: "Ты — опытный, эмпатичный и мудрый таролог. Твоя задача — давать глубокие, связные и поддерживающие интерпретации раскладов, строго опираясь на предоставленные данные о картах и их позициях.",
+					Content: "Ты — опытный, эмпатичный и мудрый таролог. Твоя задача — давать глубокие, связные интерпретации.",
 				},
 				{
 					Role:    openai.ChatMessageRoleUser,
@@ -134,17 +144,68 @@ func (h *Handler) ReadSpread(c *gin.Context) {
 		},
 	)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("LLM generation failed via AITunnel: %v", err)})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("LLM generation failed: %v", err)})
 		return
 	}
 
 	llmResponse := resp.Choices[0].Message.Content
 
-	c.JSON(http.StatusOK, gin.H{
-		"question":       req.Question,
-		"spread":         req.Spread,
-		"cards_found":    len(enrichedCards),
-		"interpretation": llmResponse,
+	// РАЗБИЕНИЕ ОТВЕТА LLM НА ЧАСТИ
+	paragraphs := strings.Split(llmResponse, "\n\n")
+	var cleanParagraphs []string
+	for _, p := range paragraphs {
+		p = strings.TrimSpace(p)
+		// Убираем возможные маркеры списков, которые мог добавить LLM
+		p = strings.TrimPrefix(p, "1. ")
+		p = strings.TrimPrefix(p, "2. ")
+		p = strings.TrimPrefix(p, "3. ")
+		p = strings.TrimPrefix(p, "Вступление:")
+		p = strings.TrimPrefix(p, "Вывод:")
+		p = strings.TrimPrefix(p, "Заключение:")
+		if p != "" {
+			cleanParagraphs = append(cleanParagraphs, p)
+		}
+	}
+
+	intro := ""
+	conclusion := ""
+	if len(cleanParagraphs) > 0 {
+		intro = cleanParagraphs[0]
+	}
+	if len(cleanParagraphs) > 1 {
+		conclusion = cleanParagraphs[len(cleanParagraphs)-1]
+	}
+
+	middleParagraphs := []string{}
+	if len(cleanParagraphs) > 2 {
+		middleParagraphs = cleanParagraphs[1 : len(cleanParagraphs)-1]
+	} else if len(cleanParagraphs) == 2 {
+		middleParagraphs = cleanParagraphs[1:]
+	}
+
+	var responseCards []CardInterpretation
+	for i, card := range req.Cards {
+		interpretation := ""
+		if i < len(middleParagraphs) {
+			interpretation = middleParagraphs[i]
+		} else {
+			// Fallback, если LLM сгенерировал меньше абзацев, чем карт
+			interpretation = "Энергия этой карты тесно переплетена с общим смыслом расклада и дополняет его."
+		}
+		
+		responseCards = append(responseCards, CardInterpretation{
+			Card: CardRequest{
+				Name:       card.Name,
+				IsReversed: card.IsReversed,
+			},
+			Interpretation: interpretation,
+		})
+	}
+
+	c.JSON(http.StatusOK, ReadSpreadResponse{
+		Intro:      intro,
+		Cards:      responseCards,
+		Conclusion: conclusion,
 	})
 }
 
@@ -316,12 +377,19 @@ func buildLLMPrompt(question, spreadName string, cards []EnrichedCardData) strin
 			}
 		}
 
-		sb.WriteString(fmt.Sprintf("### %s: «%s» (%s)\n", card.Position, card.Name, orientationText))
-		sb.WriteString(fmt.Sprintf("- *Значение:* %s\n", meaningText))
-		sb.WriteString(fmt.Sprintf("- *Совет карты:* %s\n\n", card.Advice))
+		sb.WriteString(fmt.Sprintf("- %s: «%s» (%s)\n", card.Position, card.Name, orientationText))
+		sb.WriteString(fmt.Sprintf("  *Значение:* %s\n", meaningText))
+		sb.WriteString(fmt.Sprintf("  *Совет карты:* %s\n", card.Advice))
 	}
 
-	sb.WriteString("**Задача:** Дай связный, глубокий и эмпатичный ответ на вопрос кверента, опираясь на значения выпавших карт в их позициях и их положении (прямое или перевёрнутое). Не перечисляй сухие факты, а сплети их в единое повествование. Учитывай взаимосвязь между картами и их положение в раскладе.")
+	sb.WriteString("\n**Задача:** Дай связный, глубокий и эмпатичный ответ.\n")
+	sb.WriteString("ОБЯЗАТЕЛЬНО отформатируй ответ строго так, разделяя части ДВОЙНЫМ переносом строки (\\n\\n):\n")
+	sb.WriteString("1. Краткое вступление по вопросу (1 абзац).\n")
+	for i, card := range cards {
+		sb.WriteString(fmt.Sprintf("%d. Интерпретация для карты '%s' в позиции '%s' (строго 1 абзац).\n", i+2, card.Name, card.Position))
+	}
+	sb.WriteString(fmt.Sprintf("%d. Общий вывод и совет (1 абзац).\n", len(cards)+2))
+	sb.WriteString("Не используй маркированные списки внутри этих абзацев, только сплошной текст, разделенный \\n\\n.")
 
 	return sb.String()
 }
