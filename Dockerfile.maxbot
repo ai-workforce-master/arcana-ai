@@ -11,7 +11,6 @@ RUN go mod tidy && go mod download
 
 RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o maxbot ./cmd/maxbot/main.go
 
-# Используем Debian Slim вместо Alpine для лучшей совместимости с CA-сертификатами и сетью
 FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
@@ -19,5 +18,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 WORKDIR /root/
 
 COPY --from=builder /app/maxbot .
+# Добавляем файл с токенами карт в образ контейнера
+COPY cards_tokens.json .
 
 CMD ["./maxbot"]

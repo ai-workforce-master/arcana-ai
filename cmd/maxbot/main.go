@@ -298,7 +298,7 @@ func maxSendKeyboard(userID int64, text string, buttons [][]map[string]interface
 	return maxAPIRequest("POST", fmt.Sprintf("/messages?user_id=%d", userID), reqBody, nil)
 }
 
-// НОВАЯ ФУНКЦИЯ: Отправка фото по токену MAX API
+// Отправка фото по внутреннему токену MAX API
 func maxSendPhotoByToken(userID int64, text, token string) error {
 	attachments := []interface{}{
 		map[string]interface{}{
