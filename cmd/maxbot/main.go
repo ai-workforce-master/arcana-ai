@@ -298,11 +298,11 @@ func maxSendKeyboard(userID int64, text string, buttons [][]map[string]interface
 	return maxAPIRequest("POST", fmt.Sprintf("/messages?user_id=%d", userID), reqBody, nil)
 }
 
-// Отправка фото по внутреннему токену MAX API
+// ИСПРАВЛЕНО: тип вложения изменен с "photo" на "image", так как загрузка производилась с ?type=image
 func maxSendPhotoByToken(userID int64, text, token string) error {
 	attachments := []interface{}{
 		map[string]interface{}{
-			"type": "photo",
+			"type": "image",
 			"payload": map[string]interface{}{
 				"token": token,
 			},
