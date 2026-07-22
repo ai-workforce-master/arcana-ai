@@ -4,14 +4,9 @@ import './globals.css';
 export const metadata: Metadata = {
   title: 'Arcana AI — Мудрость Таро с ИИ',
   description: 'Персональные расклады Таро с интерпретацией от искусственного интеллекта. Анонимно, точно, глубоко.',
-  keywords: 'таро, гадание, расклад, ИИ, искусственный интеллект, мистика, эзотерика',
 };
 
-export default function RootLayout({
-  children,
-}: {
-  children: React.ReactNode;
-}) {
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="ru">
       <body>
@@ -25,8 +20,7 @@ export default function RootLayout({
 }
 
 function StarryBackground() {
-  // Генерируем случайные звезды
-  const stars = Array.from({ length: 100 }, (_, i) => ({
+  const stars = Array.from({ length: 120 }, (_, i) => ({
     id: i,
     left: Math.random() * 100,
     top: Math.random() * 100,

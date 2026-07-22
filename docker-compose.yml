@@ -128,15 +128,14 @@ services:
       dockerfile: Dockerfile
     container_name: arcana-frontend
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"  # Привязываем к localhost для безопасности
     environment:
-      - BACKEND_URL=http://backend:8080
+      - BACKEND_URL=http://backend:8080  # Имя сервиса backend в сети arcana-net
     depends_on:
       - backend
     restart: unless-stopped
     networks:
-      - arcana-network
-
+      - arcana-net  # <-- ИСПРАВЛЕНО: было arcana-network
 
 volumes:
   postgres_data:

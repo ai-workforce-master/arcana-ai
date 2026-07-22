@@ -4,8 +4,7 @@ export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
 
-    // Проксируем запрос на бэкенд
-    const backendUrl = process.env.BACKEND_URL || 'http://127.0.0.1:18080';
+    const backendUrl = process.env.BACKEND_URL || 'http://backend:8080';
     const response = await fetch(`${backendUrl}/api/read-spread`, {
       method: 'POST',
       headers: {
@@ -16,6 +15,7 @@ export async function POST(request: NextRequest) {
 
     if (!response.ok) {
       const errorText = await response.text();
+      console.error('Backend error:', errorText);
       return NextResponse.json(
         { error: 'Backend error', details: errorText },
         { status: response.status }
