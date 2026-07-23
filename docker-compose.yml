@@ -85,6 +85,7 @@ services:
       - POSTGRES_DSN=postgres://arcana:arcana_password@postgres:5432/arcana_db?sslmode=disable
       - QDRANT_URL=http://qdrant:6333
       - EMBEDDINGS_SVC_URL=http://embeddings-svc:8000
+      - PROMPT_FILE=/root/prompts/tarot_reading.txt
     depends_on:
       - postgres
       - redis

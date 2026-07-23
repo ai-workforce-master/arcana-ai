@@ -19,3 +19,8 @@ npm-debug.log*
 # Build
 dist/
 build/
+
+# Секреты и скрипты
+.env
+upload_cards.py
+*.env.local

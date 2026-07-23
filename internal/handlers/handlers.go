@@ -3,6 +3,8 @@ package handlers
 import (
 	"fmt"
 	"net/http"
+	"os"
+	"regexp"
 	"strings"
 
 	"arcana-ai/internal/config"
@@ -12,9 +14,10 @@ import (
 )
 
 type Handler struct {
-	cfg       *config.Config
-	rag       *rag.Client
-	openAICli *openai.Client
+	cfg        *config.Config
+	rag        *rag.Client
+	openAICli  *openai.Client
+	promptFile string
 }
 
 func NewHandler(cfg *config.Config) (*Handler, error) {
@@ -28,10 +31,16 @@ func NewHandler(cfg *config.Config) (*Handler, error) {
 	
 	openAICli := openai.NewClientWithConfig(openaiConfig)
 
+	promptFile := os.Getenv("PROMPT_FILE")
+	if promptFile == "" {
+		promptFile = "prompts/tarot_reading.txt"
+	}
+
 	return &Handler{
-		cfg:       cfg,
-		rag:       ragClient,
-		openAICli: openAICli,
+		cfg:        cfg,
+		rag:        ragClient,
+		openAICli:  openAICli,
+		promptFile: promptFile,
 	}, nil
 }
 
@@ -84,7 +93,6 @@ type EnrichedCardData struct {
 	IsReversed bool
 }
 
-// НОВЫЕ СТРУКТУРЫ ДЛЯ ПОШАГОВОГО ОТВЕТА
 type CardInterpretation struct {
 	Card           CardRequest `json:"card"`
 	Interpretation string      `json:"interpretation"`
@@ -94,6 +102,14 @@ type ReadSpreadResponse struct {
 	Intro      string               `json:"intro"`
 	Cards      []CardInterpretation `json:"cards"`
 	Conclusion string               `json:"conclusion"`
+}
+
+func (h *Handler) loadSystemPrompt() string {
+	data, err := os.ReadFile(h.promptFile)
+	if err != nil {
+		return "Ты — опытный таролог. Давай глубокие и эмпатичные интерпретации раскладов."
+	}
+	return strings.TrimSpace(string(data))
 }
 
 func (h *Handler) ReadSpread(c *gin.Context) {
@@ -124,23 +140,21 @@ func (h *Handler) ReadSpread(c *gin.Context) {
 		})
 	}
 
-	prompt := buildLLMPrompt(req.Question, req.Spread, enrichedCards)
+	systemPrompt := h.loadSystemPrompt()
+	userPrompt := buildLLMPrompt(req.Question, req.Spread, enrichedCards)
+
+	maxTokens := 8192
 
 	resp, err := h.openAICli.CreateChatCompletion(
 		c.Request.Context(),
 		openai.ChatCompletionRequest{
 			Model: "gpt-4o",
 			Messages: []openai.ChatCompletionMessage{
-				{
-					Role:    openai.ChatMessageRoleSystem,
-					Content: "Ты — опытный, эмпатичный и мудрый таролог. Твоя задача — давать глубокие, связные интерпретации.",
-				},
-				{
-					Role:    openai.ChatMessageRoleUser,
-					Content: prompt,
-				},
+				{Role: openai.ChatMessageRoleSystem, Content: systemPrompt},
+				{Role: openai.ChatMessageRoleUser, Content: userPrompt},
 			},
 			Temperature: 0.7,
+			MaxTokens:   maxTokens,
 		},
 	)
 	if err != nil {
@@ -150,18 +164,27 @@ func (h *Handler) ReadSpread(c *gin.Context) {
 
 	llmResponse := resp.Choices[0].Message.Content
 
-	// РАЗБИЕНИЕ ОТВЕТА LLM НА ЧАСТИ
+	// УЛУЧШЕННЫЙ ПАРСИНГ С РЕГУЛЯРНЫМИ ВЫРАЖЕНИЯМИ
 	paragraphs := strings.Split(llmResponse, "\n\n")
 	var cleanParagraphs []string
+	
 	for _, p := range paragraphs {
 		p = strings.TrimSpace(p)
-		// Убираем возможные маркеры списков, которые мог добавить LLM
-		p = strings.TrimPrefix(p, "1. ")
-		p = strings.TrimPrefix(p, "2. ")
-		p = strings.TrimPrefix(p, "3. ")
-		p = strings.TrimPrefix(p, "Вступление:")
-		p = strings.TrimPrefix(p, "Вывод:")
-		p = strings.TrimPrefix(p, "Заключение:")
+		
+		// 1. Удаляем markdown заголовки (#, ##, ###)
+		p = regexp.MustCompile(`(?m)^#+\s*`).ReplaceAllString(p, "")
+		
+		// 2. Удаляем нумерацию в начале (1., 2., 12. и т.д.)
+		p = regexp.MustCompile(`(?m)^\d+\.\s*`).ReplaceAllString(p, "")
+		
+		// 3. Удаляем ключевые слова в начале строки (Вступление, Итог и т.д., с возможными двоеточиями)
+		p = regexp.MustCompile(`(?i)^(вступление|вывод|заключение|итог|интерпретация)[\s:]*`).ReplaceAllString(p, "")
+		
+		// 4. Убираем жирный шрифт (**) в начале и конце строки
+		p = strings.TrimPrefix(p, "**")
+		p = strings.TrimSuffix(p, "**")
+		
+		p = strings.TrimSpace(p)
 		if p != "" {
 			cleanParagraphs = append(cleanParagraphs, p)
 		}
@@ -189,7 +212,6 @@ func (h *Handler) ReadSpread(c *gin.Context) {
 		if i < len(middleParagraphs) {
 			interpretation = middleParagraphs[i]
 		} else {
-			// Fallback, если LLM сгенерировал меньше абзацев, чем карт
 			interpretation = "Энергия этой карты тесно переплетена с общим смыслом расклада и дополняет его."
 		}
 		
@@ -211,141 +233,48 @@ func (h *Handler) ReadSpread(c *gin.Context) {
 
 func getSpreadPositions(spreadName string, cardCount int) []string {
 	spread := strings.ToLower(spreadName)
-
-	if strings.Contains(spread, "одна карт") || strings.Contains(spread, "карта дня") || strings.Contains(spread, "одной карт") {
-		return []string{"Послание дня, основная энергия или тема"}
+	if strings.Contains(spread, "одна карт") || strings.Contains(spread, "карта дня") {
+		return []string{"Послание дня"}
 	}
-	if strings.Contains(spread, "да или нет") || strings.Contains(spread, "да/нет") {
-		return []string{
-			"Факторы ДА — что поддерживает положительный ответ",
-			"Факторы НЕТ — что указывает на препятствия",
-			"Итог — окончательный ответ и рекомендация",
-		}
+	if strings.Contains(spread, "да или нет") {
+		return []string{"Факторы ДА", "Факторы НЕТ", "Итог"}
 	}
 	if strings.Contains(spread, "три карт") || strings.Contains(spread, "триплет") {
-		return []string{
-			"Прошлое — что привело к текущей ситуации",
-			"Настоящее — текущее положение дел",
-			"Будущее — куда движется ситуация",
-		}
+		return []string{"Прошлое", "Настоящее", "Будущее"}
 	}
 	if strings.Contains(spread, "крест") && !strings.Contains(spread, "кельтский") {
-		return []string{
-			"Центр — суть ситуации, основная тема",
-			"Слева — что работает против вас, препятствия",
-			"Справа — что работает в вашу пользу, поддержка",
-			"Сверху — возможный итог, к чему всё идёт",
-		}
-	}
-	if strings.Contains(spread, "пятикарточн") || strings.Contains(spread, "пять карт") {
-		return []string{
-			"Прошлое — события и опыт, повлиявшие на ситуацию",
-			"Настоящее — текущее положение дел",
-			"Скрытые влияния — то, что работает за кулисами",
-			"Совет — что делать для лучшего результата",
-			"Возможный результат — вероятное развитие событий",
-		}
-	}
-	if strings.Contains(spread, "подкова") {
-		return []string{
-			"Прошлое — что привело к текущей ситуации",
-			"Настоящее — текущее положение дел",
-			"Скрытые влияния — неосознанные факторы, тайны",
-			"Препятствия — что мешает достижению цели",
-			"Окружение — влияние других людей, внешние обстоятельства",
-			"Совет — лучший способ действий",
-			"Результат — вероятный итог",
-		}
-	}
-	if strings.Contains(spread, "звезда") || strings.Contains(spread, "чакр") {
-		return []string{
-			"Корневая чакра — материальная основа, безопасность",
-			"Сакральная чакра — эмоции, творчество",
-			"Чакра солнечного сплетения — личная сила, воля",
-			"Сердечная чакра — любовь, отношения",
-			"Горловая чакра — коммуникация, самовыражение",
-			"Чакра третьего глаза — интуиция, мудрость",
-			"Коронная чакра — духовность, связь с высшим Я",
-		}
-	}
-	if strings.Contains(spread, "пирамида") {
-		return []string{
-			"Прошлые влияния (основа)",
-			"Текущая ситуация (основа)",
-			"Внешние факторы (основа)",
-			"Внутренние процессы (развитие)",
-			"Вызовы и возможности (развитие)",
-			"Конечный итог, главный урок (вершина)",
-		}
-	}
-	if strings.Contains(spread, "кельтский") {
-		return []string{
-			"Ситуация — суть проблемы, центральная тема",
-			"Препятствие — что блокирует ситуацию",
-			"Далёкое прошлое — глубинные причины, истоки",
-			"Недавнее прошлое — что привело к текущему состоянию",
-			"Возможное будущее — потенциальное развитие",
-			"Ближайшее будущее — что произойдёт вскоре",
-			"Ваше состояние — ваша позиция, внутреннее состояние",
-			"Окружение — влияние других людей, внешние факторы",
-			"Надежды и страхи — ваши ожидания и опасения",
-			"Результат — конечный итог ситуации",
-		}
-	}
-	if strings.Contains(spread, "колесо года") || strings.Contains(spread, "колесо") {
-		return []string{
-			"Январь — начало года, новые начинания",
-			"Февраль — внутреннее развитие",
-			"Март — пробуждение, активность",
-			"Апрель — рост, развитие",
-			"Май — расцвет, реализация",
-			"Июнь — пик активности",
-			"Июль — наслаждение результатами",
-			"Август — сбор урожая",
-			"Сентябрь — переоценка, баланс",
-			"Октябрь — трансформация",
-			"Ноябрь — отпускание, очищение",
-			"Декабрь — завершение цикла",
-		}
-	}
-	if strings.Contains(spread, "алхимик") {
-		return []string{
-			"Прошлое",
-			"Настоящее",
-			"Будущее",
-			"Ближайшее будущее",
-			"Промежуточное будущее",
-			"Отдалённое будущее",
-		}
+		return []string{"Центр (суть)", "Слева (препятствия)", "Справа (поддержка)", "Сверху (итог)"}
 	}
 	if strings.Contains(spread, "слепое пятно") {
-		return []string{
-			"Осознаваемая и демонстрируемая часть личности",
-			"Мистер Икс — скрытое, подсознательное",
-			"Тень — то, что осознаёте, но не демонстрируете",
-			"Слепое пятно — то, что видят другие, но упускаете вы",
-		}
+		return []string{"Осознаваемое", "Мистер Икс (скрытое)", "Тень", "Слепое пятно"}
 	}
-	if strings.Contains(spread, "партнёрство") || strings.Contains(spread, "партнерство") {
-		return []string{
-			"Сигнификатор — что управляет отношениями",
-			"Сознательный уровень спрашивающего",
-			"Эмоциональный уровень спрашивающего",
-			"Внешняя сторона отношений (спрашивающий)",
-			"Сознательный уровень партнёра",
-			"Эмоциональный уровень партнёра",
-			"Внешняя сторона отношений (партнёр)",
-		}
+	if strings.Contains(spread, "пятикарточн") {
+		return []string{"Прошлое", "Настоящее", "Скрытые влияния", "Совет", "Результат"}
 	}
 	if strings.Contains(spread, "ангел") || strings.Contains(spread, "голос") {
-		return []string{
-			"Истоки ситуации — ключевые события и влияния",
-			"Текущее состояние дел — объективная картина",
-			"Совет — конкретные дальнейшие шаги",
-			"Наставление ангела-хранителя — дополнительная поддержка",
-		}
+		return []string{"Истоки", "Текущее состояние", "Совет", "Наставление ангела"}
 	}
-
+	if strings.Contains(spread, "пирамида") {
+		return []string{"Прошлые влияния", "Текущая ситуация", "Внешние факторы", "Внутренние процессы", "Вызовы", "Вершина (итог)"}
+	}
+	if strings.Contains(spread, "алхимик") {
+		return []string{"Прошлое", "Настоящее", "Будущее", "Ближайшее будущее", "Промежуточное", "Отдаленное"}
+	}
+	if strings.Contains(spread, "подкова") {
+		return []string{"Прошлое", "Настоящее", "Скрытые влияния", "Препятствия", "Окружение", "Совет", "Результат"}
+	}
+	if strings.Contains(spread, "звезда") || strings.Contains(spread, "чакр") {
+		return []string{"Корневая чакра", "Сакральная", "Солнечное сплетение", "Сердечная", "Горловая", "Третий глаз", "Коронная"}
+	}
+	if strings.Contains(spread, "партнерство") {
+		return []string{"Сигнификатор", "Сознание спрашивающего", "Эмоции спрашивающего", "Внешняя сторона (спрашивающий)", "Сознание партнера", "Эмоции партнера", "Внешняя сторона (партнер)"}
+	}
+	if strings.Contains(spread, "кельтский") {
+		return []string{"Ситуация", "Препятствие", "Далекое прошлое", "Недавнее прошлое", "Возможное будущее", "Ближайшее будущее", "Ваше состояние", "Окружение", "Надежды и страхи", "Результат"}
+	}
+	if strings.Contains(spread, "колесо") {
+		return []string{"Январь", "Февраль", "Март", "Апрель", "Май", "Июнь", "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь"}
+	}
 	positions := make([]string, cardCount)
 	for i := 0; i < cardCount; i++ {
 		positions[i] = fmt.Sprintf("Позиция %d", i+1)
@@ -356,7 +285,7 @@ func getSpreadPositions(spreadName string, cardCount int) []string {
 func buildLLMPrompt(question, spreadName string, cards []EnrichedCardData) string {
 	var sb strings.Builder
 
-	sb.WriteString("Ты — опытный таролог. Проинтерпретируй расклад на основе следующих данных.\n\n")
+	sb.WriteString("Проинтерпретируй расклад на основе следующих данных.\n\n")
 	sb.WriteString(fmt.Sprintf("**Вопрос кверента:** %s\n", question))
 	if spreadName != "" {
 		sb.WriteString(fmt.Sprintf("**Используемый расклад:** %s\n\n", spreadName))
@@ -382,14 +311,15 @@ func buildLLMPrompt(question, spreadName string, cards []EnrichedCardData) strin
 		sb.WriteString(fmt.Sprintf("  *Совет карты:* %s\n", card.Advice))
 	}
 
-	sb.WriteString("\n**Задача:** Дай связный, глубокий и эмпатичный ответ.\n")
-	sb.WriteString("ОБЯЗАТЕЛЬНО отформатируй ответ строго так, разделяя части ДВОЙНЫМ переносом строки (\\n\\n):\n")
-	sb.WriteString("1. Краткое вступление по вопросу (1 абзац).\n")
-	for i, card := range cards {
-		sb.WriteString(fmt.Sprintf("%d. Интерпретация для карты '%s' в позиции '%s' (строго 1 абзац).\n", i+2, card.Name, card.Position))
+	sb.WriteString("\n**Формат ответа (СТРОГО СОБЛЮДАЙ):**\n")
+	sb.WriteString("Раздели ответ на части ДВОЙНЫМ переносом строки (\\n\\n).\n")
+	sb.WriteString("НЕ используй заголовки (##), жирный шрифт (**) или нумерацию (1., 2.) для названий частей. Пиши просто текстом.\n")
+	sb.WriteString("Первый абзац: Вступление (1-2 абзаца), кратко опиши общую энергетику расклада.\n")
+	for _, card := range cards {
+		sb.WriteString(fmt.Sprintf("Затем абзац(ы): Интерпретация для карты '%s' в позиции '%s' (1-2 абзаца, подробно).\n", card.Name, card.Position))
 	}
-	sb.WriteString(fmt.Sprintf("%d. Общий вывод и совет (1 абзац).\n", len(cards)+2))
-	sb.WriteString("Не используй маркированные списки внутри этих абзацев, только сплошной текст, разделенный \\n\\n.")
+	sb.WriteString("Последний абзац: Итоговый вывод (ОБЯЗАТЕЛЬНО 2-3 развёрнутых абзаца): обобщи все карты, дай глубокий анализ, конкретные рекомендации и поддержку кверенту.\n")
+	sb.WriteString("Не используй маркированные списки внутри этих абзацев, только сплошной текст.")
 
 	return sb.String()
 }

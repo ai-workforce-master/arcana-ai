@@ -13,6 +13,8 @@ RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o bot ./cmd/bot/mai
 
 FROM alpine:latest
 
+RUN apk --no-cache add ca-certificates
+
 WORKDIR /root/
 
 COPY --from=builder /app/bot .
