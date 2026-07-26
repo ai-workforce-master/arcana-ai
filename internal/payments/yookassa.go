@@ -245,10 +245,11 @@ func (s *YooKassaService) updateTaxReport(ctx context.Context, db *sql.DB, paidA
 	`
 	db.ExecContext(ctx, query, monthStart)
 
+	// ИСПРАВЛЕНО: явное приведение типов для PostgreSQL
 	query = `
 		UPDATE tax_reports 
-		SET total_income = total_income + $1 / $2,
-		    total_tax = total_tax + $1,
+		SET total_income = total_income + ($1::numeric) / ($2::numeric),
+		    total_tax = total_tax + $1::numeric,
 		    payments_count = payments_count + 1
 		WHERE month = $3
 	`
