@@ -424,11 +424,18 @@ func (h *Handler) PaymentStatus(c *gin.Context) {
 		return
 	}
 
+	// Корректная обработка sql.NullString для receipt_url
+	receiptURL := ""
+	if payment.ReceiptURL.Valid {
+		receiptURL = payment.ReceiptURL.String
+	}
+
 	c.JSON(http.StatusOK, gin.H{
 		"payment_id":  payment.ID,
 		"status":      payment.Status,
 		"amount":      payment.Amount,
 		"spread_name": payment.SpreadName,
 		"paid_at":     payment.PaidAt,
+		"receipt_url": receiptURL,
 	})
 }

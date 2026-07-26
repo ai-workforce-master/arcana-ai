@@ -40,14 +40,13 @@ type PaymentRecord struct {
 	TaxRate    float64
 	CreatedAt  time.Time
 	PaidAt     *time.Time
-	ReceiptURL string
+	ReceiptURL sql.NullString // ИСПРАВЛЕНО: корректная обработка NULL из БД
 }
 
-// ИСПРАВЛЕНО: Точная структура вебхука ЮKassa
 type WebhookPayload struct {
-	Type   string          `json:"type"`   // "notification"
-	Event  string          `json:"event"`  // "payment.succeeded", "payment.canceled" и т.д.
-	Object json.RawMessage `json:"object"` // Сами данные платежа
+	Type   string          `json:"type"`
+	Event  string          `json:"event"`
+	Object json.RawMessage `json:"object"`
 }
 
 type PaymentObject struct {
@@ -173,7 +172,6 @@ func (s *YooKassaService) CreatePayment(ctx context.Context, db *sql.DB, session
 	return result.Confirmation.ConfirmationURL, paymentID, nil
 }
 
-// HandleWebhook обрабатывает уведомление от ЮKassa
 func (s *YooKassaService) HandleWebhook(ctx context.Context, db *sql.DB, body []byte, signature string) error {
 	if s.webhookSecret != "" {
 		if !s.verifySignature(body, signature) {
@@ -188,13 +186,11 @@ func (s *YooKassaService) HandleWebhook(ctx context.Context, db *sql.DB, body []
 
 	log.Printf("Webhook received: type=%s, event=%s", payload.Type, payload.Event)
 
-	// Нас интересует только успешная оплата
 	if payload.Type != "notification" || payload.Event != "payment.succeeded" {
 		log.Printf("Webhook ignored: not a successful payment notification")
 		return nil
 	}
 
-	// ИСПРАВЛЕНО: Парсим данные из поля "object", а не "event"
 	var obj PaymentObject
 	if err := json.Unmarshal(payload.Object, &obj); err != nil {
 		return fmt.Errorf("failed to unmarshal payment object: %w", err)
@@ -278,7 +274,6 @@ func (s *YooKassaService) GetPaymentStatus(ctx context.Context, db *sql.DB, paym
 	)
 
 	if err != nil {
-		// ВОТ ЗДЕСЬ МЫ УВИДИМ ТОЧНУЮ ПРИЧИНУ ОШИБКИ
 		log.Printf("ERROR GetPaymentStatus: DB query failed for ID '%s': %v", paymentID, err)
 		return nil, err
 	}
