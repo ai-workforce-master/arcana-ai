@@ -1,46 +1,74 @@
 package handlers
 
 import (
+	"database/sql"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"regexp"
 	"strings"
 
 	"arcana-ai/internal/config"
+	"arcana-ai/internal/payments"
 	"arcana-ai/internal/rag"
 	"github.com/gin-gonic/gin"
+	_ "github.com/lib/pq"
 	"github.com/sashabaranov/go-openai"
 )
 
 type Handler struct {
 	cfg        *config.Config
+	db         *sql.DB
 	rag        *rag.Client
 	openAICli  *openai.Client
 	promptFile string
+	yooKassa   *payments.YooKassaService
 }
 
 func NewHandler(cfg *config.Config) (*Handler, error) {
+	// 1. Подключение к базе данных
+	db, err := sql.Open("postgres", cfg.PostgresDSN)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open database: %w", err)
+	}
+	if err := db.Ping(); err != nil {
+		return nil, fmt.Errorf("failed to ping database: %w", err)
+	}
+	log.Println("Database connected successfully")
+
+	// 2. Инициализация RAG
 	ragClient, err := rag.NewClient(cfg)
 	if err != nil {
 		return nil, err
 	}
 
+	// 3. Инициализация OpenAI
 	openaiConfig := openai.DefaultConfig(cfg.AITunnelAPIKey)
 	openaiConfig.BaseURL = cfg.AITunnelBaseURL
-	
 	openAICli := openai.NewClientWithConfig(openaiConfig)
 
+	// 4. Файл промпта
 	promptFile := os.Getenv("PROMPT_FILE")
 	if promptFile == "" {
 		promptFile = "prompts/tarot_reading.txt"
 	}
 
+	// 5. Инициализация ЮKassa
+	yooKassa, err := payments.NewYooKassaService()
+	if err != nil {
+		log.Printf("Warning: YooKassa not initialized: %v", err)
+	} else {
+		log.Println("YooKassa service initialized successfully")
+	}
+
 	return &Handler{
 		cfg:        cfg,
+		db:         db,
 		rag:        ragClient,
 		openAICli:  openAICli,
 		promptFile: promptFile,
+		yooKassa:   yooKassa,
 	}, nil
 }
 
@@ -48,6 +76,9 @@ func (h *Handler) RegisterRoutes(router *gin.Engine) {
 	router.GET("/health", h.HealthCheck)
 	router.GET("/api/test-rag", h.TestRAG)
 	router.POST("/api/read-spread", h.ReadSpread)
+	router.POST("/api/create-payment", h.CreatePayment)
+	router.POST("/api/payment-webhook", h.PaymentWebhook)
+	router.GET("/api/payment-status/:id", h.PaymentStatus)
 }
 
 func (h *Handler) HealthCheck(c *gin.Context) {
@@ -170,17 +201,9 @@ func (h *Handler) ReadSpread(c *gin.Context) {
 	
 	for _, p := range paragraphs {
 		p = strings.TrimSpace(p)
-		
-		// 1. Удаляем markdown заголовки (#, ##, ###)
 		p = regexp.MustCompile(`(?m)^#+\s*`).ReplaceAllString(p, "")
-		
-		// 2. Удаляем нумерацию в начале (1., 2., 12. и т.д.)
 		p = regexp.MustCompile(`(?m)^\d+\.\s*`).ReplaceAllString(p, "")
-		
-		// 3. Удаляем ключевые слова в начале строки (Вступление, Итог и т.д., с возможными двоеточиями)
 		p = regexp.MustCompile(`(?i)^(вступление|вывод|заключение|итог|интерпретация)[\s:]*`).ReplaceAllString(p, "")
-		
-		// 4. Убираем жирный шрифт (**) в начале и конце строки
 		p = strings.TrimPrefix(p, "**")
 		p = strings.TrimSuffix(p, "**")
 		
@@ -284,7 +307,6 @@ func getSpreadPositions(spreadName string, cardCount int) []string {
 
 func buildLLMPrompt(question, spreadName string, cards []EnrichedCardData) string {
 	var sb strings.Builder
-
 	sb.WriteString("Проинтерпретируй расклад на основе следующих данных.\n\n")
 	sb.WriteString(fmt.Sprintf("**Вопрос кверента:** %s\n", question))
 	if spreadName != "" {
@@ -322,4 +344,88 @@ func buildLLMPrompt(question, spreadName string, cards []EnrichedCardData) strin
 	sb.WriteString("Не используй маркированные списки внутри этих абзацев, только сплошной текст.")
 
 	return sb.String()
+}
+
+// ==========================================
+// ЮKassa Payment Endpoints
+// ==========================================
+
+func (h *Handler) CreatePayment(c *gin.Context) {
+	if h.yooKassa == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Payment service not available"})
+		return
+	}
+
+	var req struct {
+		SessionID  string  `json:"session_id" binding:"required"`
+		SpreadName string  `json:"spread_name" binding:"required"`
+		Amount     float64 `json:"amount" binding:"required"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	confirmationURL, paymentID, err := h.yooKassa.CreatePayment(c.Request.Context(), h.db, req.SessionID, req.SpreadName, req.Amount)
+	if err != nil {
+		log.Printf("Failed to create payment: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create payment"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"payment_id":       paymentID,
+		"confirmation_url": confirmationURL,
+	})
+}
+
+func (h *Handler) PaymentWebhook(c *gin.Context) {
+	if h.yooKassa == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Payment service not available"})
+		return
+	}
+
+	body, err := c.GetRawData()
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to read body"})
+		return
+	}
+
+	signature := c.GetHeader("X-Content-Signature")
+
+	if err := h.yooKassa.HandleWebhook(c.Request.Context(), h.db, body, signature); err != nil {
+		log.Printf("Webhook error: %v", err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Webhook processing failed"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+}
+
+func (h *Handler) PaymentStatus(c *gin.Context) {
+	if h.yooKassa == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Payment service not available"})
+		return
+	}
+
+	paymentID := c.Param("id")
+	if paymentID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Payment ID required"})
+		return
+	}
+
+	payment, err := h.yooKassa.GetPaymentStatus(c.Request.Context(), h.db, paymentID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Payment not found"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"payment_id":  payment.ID,
+		"status":      payment.Status,
+		"amount":      payment.Amount,
+		"spread_name": payment.SpreadName,
+		"paid_at":     payment.PaidAt,
+	})
 }

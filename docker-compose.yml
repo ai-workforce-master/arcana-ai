@@ -80,6 +80,9 @@ services:
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
       - YOOKASSA_SHOP_ID=${YOOKASSA_SHOP_ID}
       - YOOKASSA_SECRET_KEY=${YOOKASSA_SECRET_KEY}
+      - YOOKASSA_RETURN_URL=${YOOKASSA_RETURN_URL:-https://ai-arcana.ru/payment-success}
+      - YOOKASSA_FAIL_URL=${YOOKASSA_FAIL_URL:-https://ai-arcana.ru/payment-fail}
+      - YOOKASSA_WEBHOOK_SECRET=${YOOKASSA_WEBHOOK_SECRET}
       - MODERATION_SALT=${MODERATION_SALT}
       - REDIS_URL=redis://redis:6379/0
       - POSTGRES_DSN=postgres://arcana:arcana_password@postgres:5432/arcana_db?sslmode=disable
@@ -147,3 +150,6 @@ volumes:
 networks:
   arcana-net:
     driver: bridge
+
+# Если нужно добавить переменные в существующий backend, отредактируйте файл вручную:
+# YOOKASSA_SHOP_ID, YOOKASSA_SECRET_KEY, YOOKASSA_RETURN_URL, YOOKASSA_FAIL_URL, YOOKASSA_WEBHOOK_SECRET
