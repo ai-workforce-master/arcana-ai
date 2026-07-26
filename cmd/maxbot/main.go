@@ -63,6 +63,7 @@ var (
 	sessionsMutex sync.RWMutex
 	maxBotToken   = getEnv("MAX_BOT_TOKEN", "")
 	maxAPIBaseURL = getEnv("MAX_API_BASE_URL", "https://platform-api2.max.ru")
+	// Используем имя сервиса Docker для стабильной связи
 	backendURL    = getEnv("BACKEND_URL", "http://backend:8080")
 
 	workingMaxIP = "155.212.204.75"
@@ -101,26 +102,29 @@ type SpreadOption struct {
 	Price int
 }
 
+// Синхронизировано с документом "Расклады_Таро.docx"
 var availableSpreads = []SpreadOption{
 	{"Одна карта (Карта дня)", 29},
-	{"Да или Нет (3 карты)", 69},
+	{"Да или Нет", 69},
 	{"Три карты (Триплет)", 69},
-	{"Крест (4 карты)", 89},
-	{"Слепое пятно (4 карты)", 89},
+	{"Крест", 89},
+	{"Слепое пятно", 89},
 	{"Пятикарточный расклад", 109},
-	{"Голос Ангела-Хранителя (4 карты)", 89},
-	{"Пирамида (6 карт)", 129},
-	{"Алхимик (6 карт)", 129},
-	{"Подкова (7 карт)", 149},
-	{"Звезда / Чакральный (7 карт)", 149},
-	{"Партнерство (7 карт)", 149},
-	{"Кельтский крест (10 карт)", 199},
-	{"Колесо года (12 карт)", 229},
+	{"Голос Ангела-Хранителя", 89},
+	{"Пирамида", 129},
+	{"Алхимик", 129},
+	{"Подкова", 149},
+	{"Звезда (Чакральный)", 149},
+	{"Партнерство", 149},
+	{"Кельтский крест", 199},
+	{"Колесо года", 229},
 }
 
 // --- Вспомогательные функции ---
 func getEnv(key, defaultValue string) string {
-	if value, exists := os.LookupEnv(key); exists { return value }
+	if value, exists := os.LookupEnv(key); exists {
+		return value
+	}
 	return defaultValue
 }
 
@@ -171,7 +175,7 @@ func getCardCount(spread string) int {
 	s := strings.ToLower(spread)
 	if strings.Contains(s, "одна") { return 1 }
 	if strings.Contains(s, "да или нет") { return 3 }
-	if strings.Contains(s, "три") { return 3 }
+	if strings.Contains(s, "три") || strings.Contains(s, "триплет") { return 3 }
 	if strings.Contains(s, "крест") && !strings.Contains(s, "кельтский") { return 4 }
 	if strings.Contains(s, "слепое пятно") { return 4 }
 	if strings.Contains(s, "пятикарточн") { return 5 }
@@ -180,7 +184,7 @@ func getCardCount(spread string) int {
 	if strings.Contains(s, "алхимик") { return 6 }
 	if strings.Contains(s, "подкова") { return 7 }
 	if strings.Contains(s, "звезда") || strings.Contains(s, "чакр") { return 7 }
-	if strings.Contains(s, "партнерство") || strings.Contains(s, "партнёрство") { return 7 }
+	if strings.Contains(s, "партнерство") { return 7 }
 	if strings.Contains(s, "кельтский") { return 10 }
 	if strings.Contains(s, "колесо") { return 12 }
 	return 3
@@ -194,7 +198,9 @@ func getCardNumber(cardName string) int {
 		"Туз Мечей": 50, "Двойка Мечей": 51, "Тройка Мечей": 52, "Четверка Мечей": 53, "Пятерка Мечей": 54, "Шестерка Мечей": 55, "Семерка Мечей": 56, "Восьмерка Мечей": 57, "Девятка Мечей": 58, "Десятка Мечей": 59, "Паж Мечей": 60, "Рыцарь Мечей": 61, "Королева Мечей": 62, "Король Мечей": 63,
 		"Туз Жезлов": 64, "Двойка Жезлов": 65, "Тройка Жезлов": 66, "Четверка Жезлов": 67, "Пятерка Жезлов": 68, "Шестерка Жезлов": 69, "Семерка Жезлов": 70, "Восьмерка Жезлов": 71, "Девятка Жезлов": 72, "Десятка Жезлов": 73, "Паж Жезлов": 74, "Рыцарь Жезлов": 75, "Королева Жезлов": 76, "Король Жезлов": 77,
 	}
-	if number, exists := cardMap[cardName]; exists { return number }
+	if number, exists := cardMap[cardName]; exists {
+		return number
+	}
 	return -1
 }
 
@@ -224,16 +230,22 @@ func maxAnswerCallback(callbackQueryID, notificationText string) error {
 func maxAPIRequest(method, path string, reqBody interface{}, respBody interface{}) error {
 	url := "https://" + workingMaxIP + path
 	jsonData, err := json.Marshal(reqBody)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 
 	req, err := http.NewRequest(method, url, bytes.NewBuffer(jsonData))
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", maxBotToken)
 	req.Host = "platform-api2.max.ru"
 
 	resp, err := insecureClient.Do(req)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -241,7 +253,9 @@ func maxAPIRequest(method, path string, reqBody interface{}, respBody interface{
 		return fmt.Errorf("MAX API error: status %d, body: %s", resp.StatusCode, string(bodyBytes))
 	}
 
-	if respBody != nil { return json.NewDecoder(resp.Body).Decode(respBody) }
+	if respBody != nil {
+		return json.NewDecoder(resp.Body).Decode(respBody)
+	}
 	return nil
 }
 
@@ -257,7 +271,9 @@ func sendSpreadsKeyboard(userID int64) {
 
 func startShuffleAndReading(userID int64, userStr string) {
 	session := getSession(userStr)
-	if session == nil { return }
+	if session == nil {
+		return
+	}
 
 	session.Deck = generateDeck()
 	session.Step = "shuffling"
@@ -283,24 +299,38 @@ func handleUpdate(update map[string]interface{}) {
 	if updateType == "message_created" {
 		if msg, ok := update["message"].(map[string]interface{}); ok {
 			if sender, ok := msg["sender"].(map[string]interface{}); ok {
-				if uid, ok := sender["user_id"].(float64); ok { userID = int64(uid) }
+				if uid, ok := sender["user_id"].(float64); ok {
+					userID = int64(uid)
+				}
 			}
 			if body, ok := msg["body"].(map[string]interface{}); ok {
-				if t, ok := body["text"].(string); ok { text = strings.TrimSpace(t) }
+				if t, ok := body["text"].(string); ok {
+					text = strings.TrimSpace(t)
+				}
 			}
 		}
 	} else if updateType == "message_callback" || update["callback"] != nil {
 		isCallback = true
 		if cb, ok := update["callback"].(map[string]interface{}); ok {
-			if id, ok := cb["callback_id"].(string); ok { callbackQueryID = id } else if id, ok := cb["callback_id"].(float64); ok { callbackQueryID = fmt.Sprintf("%.0f", id) }
-			if data, ok := cb["payload"].(string); ok { callbackData = data }
+			if id, ok := cb["callback_id"].(string); ok {
+				callbackQueryID = id
+			} else if id, ok := cb["callback_id"].(float64); ok {
+				callbackQueryID = fmt.Sprintf("%.0f", id)
+			}
+			if data, ok := cb["payload"].(string); ok {
+				callbackData = data
+			}
 			if user, ok := cb["user"].(map[string]interface{}); ok {
-				if uid, ok := user["user_id"].(float64); ok { userID = int64(uid) }
+				if uid, ok := user["user_id"].(float64); ok {
+					userID = int64(uid)
+				}
 			}
 		}
 	}
 
-	if userID == 0 { return }
+	if userID == 0 {
+		return
+	}
 
 	userStr := fmt.Sprintf("%d", userID)
 	session := getSession(userStr)
@@ -324,7 +354,9 @@ func handleUpdate(update map[string]interface{}) {
 	if isCallback && strings.HasPrefix(callbackData, "select_spread|") {
 		parts := strings.Split(callbackData, "|")
 		if len(parts) == 3 {
-			if session == nil { session = &UserSession{} }
+			if session == nil {
+				session = &UserSession{}
+			}
 			session.SelectedSpread = parts[1]
 			fmt.Sscanf(parts[2], "%d", &session.SpreadPrice)
 			session.Step = "awaiting_payment"
@@ -395,11 +427,18 @@ func handleUpdate(update map[string]interface{}) {
 			session.PaymentCreatedAt = time.Now()
 			setSession(userStr, session)
 
-			msg := fmt.Sprintf("Вы выбрали: *%s*\n💰 Стоимость: *%d₽*\n\n1. Нажмите кнопку ниже для оплаты.\n2. После оплаты **закройте браузер**.\n3. Вернитесь в чат и нажмите '🔄 Проверить оплату'.", session.SelectedSpread, session.SpreadPrice)
+			// ИСПРАВЛЕНИЕ: Ссылка отправляется текстом (MAX сделает её кликабельной), 
+			// используется только проверенный тип кнопки "callback"
+			msg := fmt.Sprintf("Вы выбрали: *%s*\n💰 Стоимость: *%d₽*\n\n🔗 Ссылка на оплату:\n%s\n\nПосле успешной оплаты нажмите кнопку ниже, чтобы проверить статус.", session.SelectedSpread, session.SpreadPrice, payResp.ConfirmationURL)
 			
 			buttons := [][]map[string]interface{}{
-				{{"type": "open_link", "text": "💳 Оплатить расклад", "link": payResp.ConfirmationURL}},
-				{{"type": "callback", "text": "🔄 Проверить оплату", "payload": "check_payment"}},
+				{
+					{
+						"type":    "callback",
+						"text":    "🔄 Проверить оплату",
+						"payload": "check_payment",
+					},
+				},
 			}
 
 			log.Printf("DEBUG MAX: Attempting to send keyboard to user %d", userID)
@@ -439,7 +478,9 @@ func handleUpdate(update map[string]interface{}) {
 			return
 		}
 
-		var statusResp struct { Status string `json:"status"` }
+		var statusResp struct {
+			Status string `json:"status"`
+		}
 		json.NewDecoder(resp.Body).Decode(&statusResp)
 
 		if statusResp.Status == "succeeded" {
@@ -455,7 +496,9 @@ func handleUpdate(update map[string]interface{}) {
 	// 5. Срез колоды и РАСКЛАД
 	if isCallback && callbackData == "cut_deck" {
 		maxAnswerCallback(callbackQueryID, "Колода срезана!")
-		if session == nil { return }
+		if session == nil {
+			return
+		}
 
 		selectedSpread := session.SelectedSpread
 		question := session.Question
@@ -474,8 +517,10 @@ func handleUpdate(update map[string]interface{}) {
 			card := deck[i]
 			selectedCards = append(selectedCards, CardRequest{Name: card.Name, IsReversed: card.IsReversed})
 			reversedStr := ""
-			if card.IsReversed { reversedStr = " 🔄 (Перевёрнутая)" }
-			cardTexts = append(cardTexts, fmt.Sprintf(" Позиция %d: %s%s", i+1, card.Name, reversedStr))
+			if card.IsReversed {
+				reversedStr = " 🔄 (Перевёрнутая)"
+			}
+			cardTexts = append(cardTexts, fmt.Sprintf("📍 Позиция %d: %s%s", i+1, card.Name, reversedStr))
 		}
 
 		maxSendText(userID, "Выпавшие карты:\n\n"+strings.Join(cardTexts, "\n"))
@@ -509,10 +554,14 @@ func handleUpdate(update map[string]interface{}) {
 			isReversed := cardInterp.Card.IsReversed
 			
 			positionText := ""
-			if len(result.Cards) > 1 { positionText = fmt.Sprintf("**Позиция %d**\n", i+1) }
+			if len(result.Cards) > 1 {
+				positionText = fmt.Sprintf("**Позиция %d**\n", i+1)
+			}
 			
 			reversedNote := ""
-			if isReversed { reversedNote = " 🔄 *(Перевёрнутая)*" }
+			if isReversed {
+				reversedNote = " 🔄 *(Перевёрнутая)*"
+			}
 			
 			cardText := fmt.Sprintf("%s**%s**%s\n\n%s", positionText, cardName, reversedNote, cardInterp.Interpretation)
 			
@@ -525,12 +574,16 @@ func handleUpdate(update map[string]interface{}) {
 			
 			if photoToken != "" {
 				err := maxSendPhotoByToken(userID, cardText, photoToken)
-				if err != nil { maxSendText(userID, cardText) }
+				if err != nil {
+					maxSendText(userID, cardText)
+				}
 			} else {
 				maxSendText(userID, cardText)
 			}
 			
-			if i < len(result.Cards)-1 { time.Sleep(1500 * time.Millisecond) }
+			if i < len(result.Cards)-1 {
+				time.Sleep(1500 * time.Millisecond)
+			}
 		}
 
 		conclusion := strings.TrimSpace(result.Conclusion)
@@ -549,12 +602,16 @@ func handleUpdate(update map[string]interface{}) {
 }
 
 func min(a, b int) int {
-	if a < b { return a }
+	if a < b {
+		return a
+	}
 	return b
 }
 
 func main() {
-	if maxBotToken == "" { log.Fatal("MAX_BOT_TOKEN is not set") }
+	if maxBotToken == "" {
+		log.Fatal("MAX_BOT_TOKEN is not set")
+	}
 
 	loadCardTokens()
 
