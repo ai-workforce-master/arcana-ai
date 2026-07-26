@@ -49,14 +49,13 @@ type ReadSpreadResponse struct {
 }
 
 type UserSession struct {
-	Step                 string
-	Question             string
-	SelectedSpread       string
-	SpreadPrice          int
-	PaymentID            string // Реальный ID платежа из бэкенда
-	PaymentCreatedAt     time.Time
-	PaymentPollingActive bool
-	Deck                 []Card
+	Step             string
+	Question         string
+	SelectedSpread   string
+	SpreadPrice      int
+	PaymentID        string
+	PaymentCreatedAt time.Time
+	Deck             []Card
 }
 
 // --- Глобальные переменные ---
@@ -65,7 +64,7 @@ var (
 	sessions      = make(map[int64]*UserSession)
 	sessionsMutex sync.RWMutex
 	botToken      = getEnv("TELEGRAM_BOT_TOKEN", "")
-	backendURL    = getEnv("BACKEND_URL", "http://127.0.0.1:18080")
+	backendURL    = getEnv("BACKEND_URL", "http://backend:8080")
 
 	cardNameToNumber = map[string]int{
 		"Шут": 0, "Маг": 1, "Верховная Жрица": 2, "Императрица": 3, "Император": 4, "Иерофант": 5, "Влюбленные": 6, "Колесница": 7, "Сила": 8, "Отшельник": 9, "Колесо Фортуны": 10, "Справедливость": 11, "Повешенный": 12, "Смерть": 13, "Умеренность": 14, "Дьявол": 15, "Башня": 16, "Звезда": 17, "Луна": 18, "Солнце": 19, "Суд": 20, "Мир": 21,
@@ -237,44 +236,25 @@ func getSpreadPositions(spreadName string, cardCount int) []string {
 	return positions
 }
 
-// --- Проверка статуса оплаты через бэкенд ---
-
-func checkPaymentStatus(bot *tgbotapi.BotAPI, chatID int64, paymentID string) {
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Get(backendURL + "/api/payment-status/" + paymentID)
-	
-	session := getSession(chatID)
-	if session == nil {
-		return
+func sendSpreadsKeyboard(bot *tgbotapi.BotAPI, chatID int64) {
+	msg := tgbotapi.NewMessage(chatID, "Выберите тип расклада:")
+	var buttons []tgbotapi.InlineKeyboardButton
+	for _, sp := range availableSpreads {
+		buttons = append(buttons, tgbotapi.NewInlineKeyboardButtonData(
+			fmt.Sprintf("%s — %d₽", sp.Name, sp.Price),
+			fmt.Sprintf("select_spread|%s", sp.ID),
+		))
 	}
-	
-	if err != nil || resp == nil || resp.StatusCode != http.StatusOK {
-		log.Printf("ERROR TG: Failed to check payment status for chat %d: err=%v, resp=%v", chatID, err, resp)
-		bot.Send(tgbotapi.NewMessage(chatID, "⚠️ Не удалось проверить статус оплаты. Попробуйте нажать '✅ Я оплатил' еще раз через несколько секунд."))
-		session.PaymentPollingActive = false
-		setSession(chatID, session)
-		return
+	keyboard := tgbotapi.NewInlineKeyboardMarkup()
+	for i := 0; i < len(buttons); i += 2 {
+		if i+1 < len(buttons) {
+			keyboard.InlineKeyboard = append(keyboard.InlineKeyboard, tgbotapi.NewInlineKeyboardRow(buttons[i], buttons[i+1]))
+		} else {
+			keyboard.InlineKeyboard = append(keyboard.InlineKeyboard, tgbotapi.NewInlineKeyboardRow(buttons[i]))
+		}
 	}
-	
-	var statusResp struct {
-		Status string `json:"status"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&statusResp); err != nil {
-		log.Printf("ERROR TG: Failed to decode payment status for chat %d: %v", chatID, err)
-		bot.Send(tgbotapi.NewMessage(chatID, "⚠️ Ошибка при обработке статуса оплаты."))
-		session.PaymentPollingActive = false
-		setSession(chatID, session)
-		return
-	}
-	
-	if statusResp.Status == "succeeded" {
-		bot.Send(tgbotapi.NewMessage(chatID, "✅ Оплата подтверждена! Начинаем ритуал..."))
-		go startShuffleAndReading(bot, chatID)
-	} else {
-		bot.Send(tgbotapi.NewMessage(chatID, "⏳ Оплата ещё не подтверждена. Пожалуйста, завершите оплату и нажмите кнопку снова."))
-		session.PaymentPollingActive = false
-		setSession(chatID, session)
-	}
+	msg.ReplyMarkup = keyboard
+	bot.Send(msg)
 }
 
 func startShuffleAndReading(bot *tgbotapi.BotAPI, chatID int64) {
@@ -385,33 +365,11 @@ func main() {
 			session.Step = "awaiting_spread"
 			setSession(chatID, session)
 
-			msg := tgbotapi.NewMessage(chatID, "Отличный вопрос! Выберите тип расклада:")
-			var buttons []tgbotapi.InlineKeyboardButton
-			for _, sp := range availableSpreads {
-				buttons = append(buttons, tgbotapi.NewInlineKeyboardButtonData(
-					fmt.Sprintf("%s — %d₽", sp.Name, sp.Price),
-					fmt.Sprintf("select_spread|%s", sp.ID),
-				))
-			}
-			keyboard := tgbotapi.NewInlineKeyboardMarkup()
-			for i := 0; i < len(buttons); i += 2 {
-				if i+1 < len(buttons) {
-					keyboard.InlineKeyboard = append(keyboard.InlineKeyboard, tgbotapi.NewInlineKeyboardRow(buttons[i], buttons[i+1]))
-				} else {
-					keyboard.InlineKeyboard = append(keyboard.InlineKeyboard, tgbotapi.NewInlineKeyboardRow(buttons[i]))
-				}
-			}
-			msg.ReplyMarkup = keyboard
-			
-			if _, err := bot.Send(msg); err != nil {
-				log.Printf("ERROR TG: Failed to send spread selection keyboard to chat %d: %v", chatID, err)
-			} else {
-				log.Printf("DEBUG TG: Keyboard sent successfully to chat %d", chatID)
-			}
+			sendSpreadsKeyboard(bot, chatID)
 			continue
 		}
 
-		// 3. Выбор расклада и создание платежа через бэкенд
+		// 3. Выбор расклада и создание платежа
 		if update.CallbackQuery != nil && strings.HasPrefix(text, "select_spread|") {
 			parts := strings.Split(text, "|")
 			if len(parts) == 2 {
@@ -438,7 +396,6 @@ func main() {
 				bot.Request(tgbotapi.NewCallback(update.CallbackQuery.ID, "Расклад выбран"))
 				bot.Send(tgbotapi.NewMessage(chatID, "⏳ Создаем ссылку на оплату..."))
 
-				// Создаем платеж через бэкенд
 				sessionID := generatePaymentToken()
 				reqBody := map[string]interface{}{
 					"session_id":  sessionID,
@@ -473,17 +430,16 @@ func main() {
 				setSession(chatID, session)
 
 				msg := tgbotapi.NewMessage(chatID, fmt.Sprintf(
-					"Вы выбрали: *%s*\n💰 Стоимость: *%d₽*\n\nДля продолжения ритуала необходимо оплатить расклад.\n\n🔗 [Нажмите здесь для оплаты через ЮKassa](%s)\n\nПосле успешной оплаты нажмите кнопку ниже.",
-					session.SelectedSpread, session.SpreadPrice, payResp.ConfirmationURL,
+					"Вы выбрали: *%s*\n💰 Стоимость: *%d₽*\n\nНажмите кнопку ниже для оплаты через ЮKassa.\nПосле оплаты нажмите 'Проверить оплату'.",
+					session.SelectedSpread, session.SpreadPrice,
 				))
 				msg.ParseMode = "Markdown"
-				msg.DisableWebPagePreview = true
 				msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
 					tgbotapi.NewInlineKeyboardRow(
 						tgbotapi.NewInlineKeyboardButtonURL("💳 Оплатить расклад", payResp.ConfirmationURL),
 					),
 					tgbotapi.NewInlineKeyboardRow(
-						tgbotapi.NewInlineKeyboardButtonData("✅ Я оплатил", "check_payment"),
+						tgbotapi.NewInlineKeyboardButtonData("🔄 Проверить оплату", "check_payment"),
 					),
 				)
 				bot.Send(msg)
@@ -491,7 +447,7 @@ func main() {
 			continue
 		}
 
-		// 4. Проверка оплаты через бэкенд
+		// 4. Проверка оплаты
 		if update.CallbackQuery != nil && text == "check_payment" {
 			if session == nil || session.PaymentID == "" {
 				bot.Request(tgbotapi.NewCallback(update.CallbackQuery.ID, "Сессия не найдена"))
@@ -500,26 +456,36 @@ func main() {
 			}
 			if time.Since(session.PaymentCreatedAt) > PaymentTokenLifetime {
 				bot.Request(tgbotapi.NewCallback(update.CallbackQuery.ID, "Токен истёк"))
-				bot.Send(tgbotapi.NewMessage(chatID, "⏳ Время на оплату истекло. Начните заново с /start"))
+				bot.Send(tgbotapi.NewMessage(chatID, " Время на оплату истекло. Начните заново с /start"))
 				clearSession(chatID)
 				continue
 			}
-			if session.PaymentPollingActive {
-				bot.Request(tgbotapi.NewCallback(update.CallbackQuery.ID, "Оплата уже проверяется"))
+
+			bot.Request(tgbotapi.NewCallback(update.CallbackQuery.ID, "Проверяем..."))
+			bot.Send(tgbotapi.NewMessage(chatID, "⏳ Проверяем статус оплаты..."))
+
+			client := &http.Client{Timeout: 10 * time.Second}
+			resp, err := client.Get(backendURL + "/api/payment-status/" + session.PaymentID)
+
+			if err != nil || resp == nil || resp.StatusCode != http.StatusOK {
+				bot.Send(tgbotapi.NewMessage(chatID, "⚠️ Не удалось проверить статус. Попробуйте позже."))
 				continue
 			}
 
-			session.PaymentPollingActive = true
-			setSession(chatID, session)
+			var statusResp struct { Status string `json:"status"` }
+			json.NewDecoder(resp.Body).Decode(&statusResp)
 
-			bot.Request(tgbotapi.NewCallback(update.CallbackQuery.ID, "Проверяем оплату..."))
-			bot.Send(tgbotapi.NewMessage(chatID, "⏳ Проверяем статус оплаты в системе..."))
-			
-			go checkPaymentStatus(bot, chatID, session.PaymentID)
+			if statusResp.Status == "succeeded" {
+				bot.Send(tgbotapi.NewMessage(chatID, "✅ Оплата подтверждена! Начинаем ритуал..."))
+				go startShuffleAndReading(bot, chatID)
+			} else {
+				bot.Send(tgbotapi.NewMessage(chatID, "⏳ Оплата ещё не прошла. Выберите расклад снова:"))
+				sendSpreadsKeyboard(bot, chatID)
+			}
 			continue
 		}
 
-		// 5. Срез колоды и ПОЭТАПНЫЙ РАСКЛАД
+		// 5. Срез колоды и РАСКЛАД
 		if update.CallbackQuery != nil && text == "cut_deck" {
 			bot.Request(tgbotapi.NewCallback(update.CallbackQuery.ID, "Колода срезана!"))
 
@@ -580,22 +546,15 @@ func main() {
 				continue
 			}
 
-			log.Printf("DEBUG TG: Backend response for chat %d: intro=%d chars, cards=%d, conclusion=%d chars", 
-				chatID, len(result.Intro), len(result.Cards), len(result.Conclusion))
-
 			positions := getSpreadPositions(selectedSpread, len(result.Cards))
 
-			// 1. Отправляем вступление
 			if strings.TrimSpace(result.Intro) != "" {
 				introMsg := tgbotapi.NewMessage(chatID, result.Intro)
 				introMsg.ParseMode = "Markdown"
-				if _, err := bot.Send(introMsg); err != nil {
-					log.Printf("ERROR TG: Failed to send intro to chat %d: %v", chatID, err)
-				}
+				bot.Send(introMsg)
 				time.Sleep(1 * time.Second)
 			}
 
-			// 2. Отправляем карты по одной с паузой
 			for i, cardInterp := range result.Cards {
 				cardName := cardInterp.Card.Name
 				isReversed := cardInterp.Card.IsReversed
@@ -612,12 +571,9 @@ func main() {
 				
 				caption := fmt.Sprintf("%s**%s**%s\n\n%s", posText, cardName, reversedNote, cardInterp.Interpretation)
 				
-				log.Printf("DEBUG TG: Sending card %d/%d (%s) to chat %d", i+1, len(result.Cards), cardName, chatID)
-				
 				imgURL := getCardImageURL(cardName)
 				imgResp, err := http.Get(imgURL)
 				if err != nil || imgResp.StatusCode != http.StatusOK {
-					log.Printf("ERROR TG: Failed to download image for %s: %v. Sending text only...", cardName, err)
 					textMsg := tgbotapi.NewMessage(chatID, caption)
 					textMsg.ParseMode = "Markdown"
 					bot.Send(textMsg)
@@ -630,7 +586,6 @@ func main() {
 					photo.ParseMode = "Markdown"
 					
 					if _, err := bot.Send(photo); err != nil {
-						log.Printf("ERROR TG: Failed to send photo bytes for card %d: %v. Sending text only...", i+1, err)
 						textMsg := tgbotapi.NewMessage(chatID, caption)
 						textMsg.ParseMode = "Markdown"
 						bot.Send(textMsg)
@@ -642,19 +597,14 @@ func main() {
 				}
 			}
 
-			// 3. Отправляем итог
 			conclusion := strings.TrimSpace(result.Conclusion)
 			if conclusion != "" {
 				conclMsg := tgbotapi.NewMessage(chatID, fmt.Sprintf("✨ *Итог*\n\n%s\n\n_Хотите задать еще один вопрос? Нажмите /start_", conclusion))
 				conclMsg.ParseMode = "Markdown"
-				if _, err := bot.Send(conclMsg); err != nil {
-					log.Printf("ERROR TG: Failed to send conclusion to chat %d: %v", chatID, err)
-				}
+				bot.Send(conclMsg)
 			} else {
 				bot.Send(tgbotapi.NewMessage(chatID, "_Хотите задать еще один вопрос? Нажмите /start_"))
 			}
-			
-			log.Printf("DEBUG TG: All cards sent to chat %d", chatID)
 			continue
 		}
 
@@ -663,7 +613,7 @@ func main() {
 			msg := tgbotapi.NewMessage(chatID, "Пожалуйста, используйте команду /start или кнопку '🔮 Новый расклад' для начала.")
 			msg.ReplyMarkup = tgbotapi.NewReplyKeyboard(
 				tgbotapi.NewKeyboardButtonRow(
-					tgbotapi.NewKeyboardButton("🔮 Новый расклад"),
+					tgbotapi.NewKeyboardButton(" Новый расклад"),
 				),
 			)
 			bot.Send(msg)

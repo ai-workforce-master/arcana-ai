@@ -49,14 +49,13 @@ type ReadSpreadResponse struct {
 }
 
 type UserSession struct {
-	Step                 string
-	Question             string
-	SelectedSpread       string
-	SpreadPrice          int
-	PaymentID            string // Реальный ID платежа из бэкенда
-	PaymentCreatedAt     time.Time
-	PaymentPollingActive bool
-	Deck                 []Card
+	Step             string
+	Question         string
+	SelectedSpread   string
+	SpreadPrice      int
+	PaymentID        string
+	PaymentCreatedAt time.Time
+	Deck             []Card
 }
 
 // --- Глобальные переменные ---
@@ -66,17 +65,15 @@ var (
 	sessionsMutex sync.RWMutex
 	maxBotToken   = getEnv("MAX_BOT_TOKEN", "")
 	maxAPIBaseURL = getEnv("MAX_API_BASE_URL", "https://platform-api2.max.ru")
-	backendURL    = getEnv("BACKEND_URL", "http://127.0.0.1:18080")
+	backendURL    = getEnv("BACKEND_URL", "http://backend:8080")
 
 	workingMaxIP = "155.212.204.75"
 
-	// Хранилище токенов для карт
 	cardTokens = make(map[string]string)
 
 	customTransport = &http.Transport{
 		Proxy: http.ProxyFromEnvironment,
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			log.Printf("DEBUG Dial: attempting tcp4 to %s", addr)
 			dialer := &net.Dialer{
 				Timeout:   10 * time.Second,
 				KeepAlive: 30 * time.Second,
@@ -331,44 +328,14 @@ func maxAPIRequest(method, path string, reqBody interface{}, respBody interface{
 	return nil
 }
 
-// --- Проверка статуса оплаты через бэкенд ---
-
-func checkPaymentStatus(userID int64, userStr string, paymentID string) {
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Get(backendURL + "/api/payment-status/" + paymentID)
-	
-	session := getSession(userStr)
-	if session == nil {
-		return
+func sendSpreadsKeyboard(userID int64) {
+	var buttons [][]map[string]interface{}
+	for _, sp := range availableSpreads {
+		buttons = append(buttons, []map[string]interface{}{
+			{"type": "callback", "text": fmt.Sprintf("%s — %d₽", sp.Name, sp.Price), "payload": fmt.Sprintf("select_spread|%s|%d", sp.Name, sp.Price)},
+		})
 	}
-	
-	if err != nil || resp == nil || resp.StatusCode != http.StatusOK {
-		log.Printf("ERROR MAX: Failed to check payment status for user %d: err=%v, resp=%v", userID, err, resp)
-		maxSendText(userID, "⚠️ Не удалось проверить статус оплаты. Попробуйте нажать '✅ Я оплатил' еще раз через несколько секунд.")
-		session.PaymentPollingActive = false
-		setSession(userStr, session)
-		return
-	}
-	
-	var statusResp struct {
-		Status string `json:"status"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&statusResp); err != nil {
-		log.Printf("ERROR MAX: Failed to decode payment status for user %d: %v", userID, err)
-		maxSendText(userID, "⚠️ Ошибка при обработке статуса оплаты.")
-		session.PaymentPollingActive = false
-		setSession(userStr, session)
-		return
-	}
-	
-	if statusResp.Status == "succeeded" {
-		maxSendText(userID, "✅ Оплата подтверждена! Начинаем ритуал...")
-		go startShuffleAndReading(userID, userStr)
-	} else {
-		maxSendText(userID, "⏳ Оплата ещё не подтверждена. Пожалуйста, завершите оплату и нажмите кнопку снова.")
-		session.PaymentPollingActive = false
-		setSession(userStr, session)
-	}
+	maxSendKeyboard(userID, "Выберите тип расклада:", buttons)
 }
 
 func startShuffleAndReading(userID int64, userStr string) {
@@ -438,7 +405,6 @@ func handleUpdate(update map[string]interface{}) {
 				}
 			}
 		}
-		log.Printf("DEBUG: Received callback: id=%s, payload=%s, userID=%d", callbackQueryID, callbackData, userID)
 	}
 
 	if userID == 0 {
@@ -451,13 +417,7 @@ func handleUpdate(update map[string]interface{}) {
 	if text == "/start" || text == "🔮 Новый расклад" {
 		clearSession(userStr)
 		setSession(userStr, &UserSession{Step: "awaiting_question"})
-
-		err := maxSendText(userID, "🔮 Добро пожаловать в Arcana AI!\n\nЗадайте ваш вопрос картам Таро (например: 'Что меня ждет в новом проекте?'):")
-		if err != nil {
-			log.Printf("ERROR sending start message to %d: %v", userID, err)
-		} else {
-			log.Printf("SUCCESS: Sent start message to %d", userID)
-		}
+		maxSendText(userID, "🔮 Добро пожаловать в Arcana AI!\n\nЗадайте ваш вопрос картам Таро (например: 'Что меня ждет в новом проекте?'):")
 		return
 	}
 
@@ -465,27 +425,11 @@ func handleUpdate(update map[string]interface{}) {
 		session.Question = text
 		session.Step = "awaiting_spread"
 		setSession(userStr, session)
-
-		var buttons [][]map[string]interface{}
-		for _, sp := range availableSpreads {
-			buttons = append(buttons, []map[string]interface{}{
-				{
-					"type":    "callback",
-					"text":    fmt.Sprintf("%s — %d₽", sp.Name, sp.Price),
-					"payload": fmt.Sprintf("select_spread|%s|%d", sp.Name, sp.Price),
-				},
-			})
-		}
-		err := maxSendKeyboard(userID, "Отличный вопрос! Выберите тип расклада:", buttons)
-		if err != nil {
-			log.Printf("ERROR sending keyboard to %d: %v", userID, err)
-		} else {
-			log.Printf("SUCCESS: Sent keyboard to %d", userID)
-		}
+		sendSpreadsKeyboard(userID)
 		return
 	}
 
-	// 3. Выбор расклада и создание платежа через бэкенд
+	// 3. Выбор расклада и создание платежа
 	if isCallback && strings.HasPrefix(callbackData, "select_spread|") {
 		parts := strings.Split(callbackData, "|")
 		if len(parts) == 3 {
@@ -500,7 +444,6 @@ func handleUpdate(update map[string]interface{}) {
 			maxAnswerCallback(callbackQueryID, "Расклад выбран")
 			maxSendText(userID, "⏳ Создаем ссылку на оплату...")
 
-			// Создаем платеж через бэкенд
 			sessionID := uuid.New().String()
 			reqBody := map[string]interface{}{
 				"session_id":  sessionID,
@@ -534,36 +477,19 @@ func handleUpdate(update map[string]interface{}) {
 			session.PaymentCreatedAt = time.Now()
 			setSession(userStr, session)
 
-			msg := fmt.Sprintf("Вы выбрали: *%s*\n Стоимость: *%d₽*\n\nДля продолжения ритуала необходимо оплатить расклад.\n\n🔗 [Нажмите здесь для оплаты через ЮKassa](%s)\n\nПосле успешной оплаты нажмите кнопку ниже.", session.SelectedSpread, session.SpreadPrice, payResp.ConfirmationURL)
+			msg := fmt.Sprintf("Вы выбрали: *%s*\n💰 Стоимость: *%d₽*\n\nНажмите кнопку ниже для оплаты через ЮKassa.\nПосле оплаты нажмите 'Проверить оплату'.", session.SelectedSpread, session.SpreadPrice)
 			
 			buttons := [][]map[string]interface{}{
-				{
-					{
-						"type":    "url",
-						"text":    "💳 Оплатить расклад",
-						"url":     payResp.ConfirmationURL,
-					},
-				},
-				{
-					{
-						"type":    "callback",
-						"text":    "✅ Я оплатил",
-						"payload": "check_payment",
-					},
-				},
+				{{"type": "open_link", "text": "💳 Оплатить расклад", "link": payResp.ConfirmationURL}},
+				{{"type": "callback", "text": "🔄 Проверить оплату", "payload": "check_payment"}},
 			}
 
-			err = maxSendKeyboard(userID, msg, buttons)
-			if err != nil {
-				log.Printf("ERROR sending payment prompt to %d: %v", userID, err)
-			} else {
-				log.Printf("SUCCESS: Sent payment prompt to %d", userID)
-			}
+			maxSendKeyboard(userID, msg, buttons)
 		}
 		return
 	}
 
-	// 4. Проверка оплаты через бэкенд
+	// 4. Проверка оплаты
 	if isCallback && callbackData == "check_payment" {
 		if session == nil || session.PaymentID == "" {
 			maxAnswerCallback(callbackQueryID, "Сессия не найдена")
@@ -572,26 +498,36 @@ func handleUpdate(update map[string]interface{}) {
 		}
 		if time.Since(session.PaymentCreatedAt) > PaymentTokenLifetime {
 			maxAnswerCallback(callbackQueryID, "Токен истёк")
-			maxSendText(userID, "⏳ Время на оплату истекло. Начните заново с /start")
+			maxSendText(userID, " Время на оплату истекло. Начните заново с /start")
 			clearSession(userStr)
 			return
 		}
-		if session.PaymentPollingActive {
-			maxAnswerCallback(callbackQueryID, "Оплата уже проверяется")
+
+		maxAnswerCallback(callbackQueryID, "Проверяем...")
+		maxSendText(userID, "⏳ Проверяем статус оплаты...")
+
+		client := &http.Client{Timeout: 10 * time.Second}
+		resp, err := client.Get(backendURL + "/api/payment-status/" + session.PaymentID)
+
+		if err != nil || resp == nil || resp.StatusCode != http.StatusOK {
+			maxSendText(userID, "️ Не удалось проверить статус. Попробуйте позже.")
 			return
 		}
 
-		session.PaymentPollingActive = true
-		setSession(userStr, session)
+		var statusResp struct { Status string `json:"status"` }
+		json.NewDecoder(resp.Body).Decode(&statusResp)
 
-		maxAnswerCallback(callbackQueryID, "Проверяем оплату...")
-		maxSendText(userID, "⏳ Проверяем статус оплаты в системе...")
-		
-		go checkPaymentStatus(userID, userStr, session.PaymentID)
+		if statusResp.Status == "succeeded" {
+			maxSendText(userID, "✅ Оплата подтверждена! Начинаем ритуал...")
+			go startShuffleAndReading(userID, userStr)
+		} else {
+			maxSendText(userID, " Оплата ещё не прошла. Выберите расклад снова:")
+			sendSpreadsKeyboard(userID)
+		}
 		return
 	}
 
-	// 5. Срез колоды и ПОЭТАПНЫЙ РАСКЛАД
+	// 5. Срез колоды и РАСКЛАД
 	if isCallback && callbackData == "cut_deck" {
 		maxAnswerCallback(callbackQueryID, "Колода срезана!")
 
@@ -623,49 +559,29 @@ func handleUpdate(update map[string]interface{}) {
 		maxSendText(userID, "Выпавшие карты:\n\n"+strings.Join(cardTexts, "\n"))
 		maxSendText(userID, "⏳ Запрашиваем мудрость ИИ...")
 
-		log.Printf("DEBUG: Preparing backend request for user %d", userID)
 		reqBody := ReadSpreadRequest{Question: question, Spread: selectedSpread, Cards: selectedCards}
 		jsonData, _ := json.Marshal(reqBody)
 		targetURL := backendURL + "/api/read-spread"
-		log.Printf("DEBUG: Backend URL: %s", targetURL)
 
-		log.Printf("DEBUG: Calling backend...")
 		resp, err := insecureClient.Post(targetURL, "application/json", bytes.NewBuffer(jsonData))
-		log.Printf("DEBUG: Backend call finished. err=%v, resp=%v", err, resp)
-		
 		clearSession(userStr)
 
-		if err != nil {
-			log.Printf("ERROR: Backend request failed: %v", err)
-			maxSendText(userID, "❌ Ошибка при обращении к оракулу.")
-			return
-		}
-		if resp == nil || resp.StatusCode != http.StatusOK {
-			status := 0
-			if resp != nil {
-				status = resp.StatusCode
-			}
-			log.Printf("ERROR: Backend returned non-200 status: %d", status)
+		if err != nil || resp == nil || resp.StatusCode != http.StatusOK {
 			maxSendText(userID, "❌ Ошибка при обращении к оракулу.")
 			return
 		}
 
-		log.Printf("DEBUG: Decoding backend response...")
 		var result ReadSpreadResponse
 		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-			log.Printf("ERROR: Failed to decode backend response: %v", err)
-			maxSendText(userID, "❌ Ошибка при обработке ответа от ИИ.")
+			maxSendText(userID, " Ошибка при обработке ответа от ИИ.")
 			return
 		}
-		log.Printf("DEBUG: Backend response decoded successfully.")
 
-		// 1. Отправляем вступление
 		if strings.TrimSpace(result.Intro) != "" {
 			maxSendText(userID, result.Intro)
 			time.Sleep(1000 * time.Millisecond)
 		}
 
-		// 2. Отправляем каждую карту с её интерпретацией и картинкой (по токену)
 		for i, cardInterp := range result.Cards {
 			cardName := cardInterp.Card.Name
 			isReversed := cardInterp.Card.IsReversed
@@ -682,7 +598,6 @@ func handleUpdate(update map[string]interface{}) {
 			
 			cardText := fmt.Sprintf("%s**%s**%s\n\n%s", positionText, cardName, reversedNote, cardInterp.Interpretation)
 			
-			// Получаем токен картинки
 			cardNumber := getCardNumber(cardName)
 			var photoToken string
 			if cardNumber >= 0 {
@@ -690,16 +605,12 @@ func handleUpdate(update map[string]interface{}) {
 				photoToken = cardTokens[filename]
 			}
 			
-			log.Printf("DEBUG: Sending card %d/%d (%s)", i+1, len(result.Cards), cardName)
-			
 			if photoToken != "" {
 				err := maxSendPhotoByToken(userID, cardText, photoToken)
 				if err != nil {
-					log.Printf("ERROR sending card %d with photo: %v. Trying text only...", i+1, err)
 					maxSendText(userID, cardText)
 				}
 			} else {
-				log.Printf("WARNING: No token found for card %s, sending text only", cardName)
 				maxSendText(userID, cardText)
 			}
 			
@@ -708,17 +619,13 @@ func handleUpdate(update map[string]interface{}) {
 			}
 		}
 
-		// 3. Отправляем вывод (если он есть)
 		conclusion := strings.TrimSpace(result.Conclusion)
 		if conclusion != "" {
 			maxSendText(userID, conclusion)
 			time.Sleep(500 * time.Millisecond)
 		}
 
-		// 4. Финальное сообщение с предложением начать заново
 		maxSendText(userID, "✨ Если у вас есть ещё вопросы, просто напишите /start, и мы проведём новый расклад!")
-		
-		log.Printf("DEBUG: All cards sent to user %d", userID)
 		return
 	}
 
@@ -739,7 +646,6 @@ func main() {
 		log.Fatal("MAX_BOT_TOKEN is not set")
 	}
 
-	// Загружаем токены картинок при старте
 	loadCardTokens()
 
 	log.Printf("Starting MAX Bot...")
@@ -748,14 +654,11 @@ func main() {
 
 	for {
 		url := "https://" + workingMaxIP + "/updates"
-		log.Printf("Preparing polling request to: %s (forced IP, HTTP/1.1 only)", url)
-
 		req, _ := http.NewRequest("GET", url, nil)
 		req.Header.Set("Authorization", maxBotToken)
 		req.Header.Set("Accept", "application/json")
 		req.Host = "platform-api2.max.ru"
 
-		log.Printf("Sending polling request (timeout 60s for long polling)...")
 		resp, err := pollingClient.Do(req)
 		if err != nil {
 			log.Printf("Error polling: %v", err)
@@ -763,12 +666,8 @@ func main() {
 			continue
 		}
 
-		log.Printf("Received response, status: %d", resp.StatusCode)
-
 		bodyBytes, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
-
-		log.Printf("Response body (first 500 chars): %s", string(bodyBytes[:min(500, len(bodyBytes))]))
 
 		var maxResponse struct {
 			Updates []map[string]interface{} `json:"updates"`
