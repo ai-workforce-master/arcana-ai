@@ -20,7 +20,6 @@ import (
 )
 
 // --- Структуры данных ---
-
 type Card struct {
 	Name       string
 	IsReversed bool
@@ -59,7 +58,6 @@ type UserSession struct {
 }
 
 // --- Глобальные переменные ---
-
 var (
 	sessions      = make(map[int64]*UserSession)
 	sessionsMutex sync.RWMutex
@@ -111,11 +109,8 @@ var availableSpreads = []SpreadOption{
 }
 
 // --- Вспомогательные функции ---
-
 func getEnv(key, defaultValue string) string {
-	if value, exists := os.LookupEnv(key); exists {
-		return value
-	}
+	if value, exists := os.LookupEnv(key); exists { return value }
 	return defaultValue
 }
 
@@ -140,10 +135,7 @@ func setSession(chatID int64, session *UserSession) {
 func generateDeck() []Card {
 	deck := make([]Card, len(standardDeck))
 	for i, name := range standardDeck {
-		deck[i] = Card{
-			Name:       name,
-			IsReversed: mrand.Float32() < 0.3,
-		}
+		deck[i] = Card{Name: name, IsReversed: mrand.Float32() < 0.3}
 	}
 	for i := len(deck) - 1; i > 0; i-- {
 		j := mrand.Intn(i + 1)
@@ -179,60 +171,28 @@ func getCardCount(spread string) int {
 
 func getCardImageURL(cardName string) string {
 	num, exists := cardNameToNumber[cardName]
-	if !exists {
-		return "https://ai-arcana.ru/cards/RWS_00000.jpg"
-	}
+	if !exists { return "https://ai-arcana.ru/cards/RWS_00000.jpg" }
 	return fmt.Sprintf("https://ai-arcana.ru/cards/RWS_%05d.jpg", num)
 }
 
 func getSpreadPositions(spreadName string, cardCount int) []string {
 	spread := strings.ToLower(spreadName)
-	if strings.Contains(spread, "одна карт") || strings.Contains(spread, "карта дня") {
-		return []string{"Послание дня"}
-	}
-	if strings.Contains(spread, "да или нет") {
-		return []string{"Факторы ДА", "Факторы НЕТ", "Итог"}
-	}
-	if strings.Contains(spread, "три карт") || strings.Contains(spread, "триплет") {
-		return []string{"Прошлое", "Настоящее", "Будущее"}
-	}
-	if strings.Contains(spread, "крест") && !strings.Contains(spread, "кельтский") {
-		return []string{"Центр (суть)", "Слева (препятствия)", "Справа (поддержка)", "Сверху (итог)"}
-	}
-	if strings.Contains(spread, "слепое пятно") {
-		return []string{"Осознаваемое", "Мистер Икс (скрытое)", "Тень", "Слепое пятно"}
-	}
-	if strings.Contains(spread, "пятикарточн") {
-		return []string{"Прошлое", "Настоящее", "Скрытые влияния", "Совет", "Результат"}
-	}
-	if strings.Contains(spread, "ангел") || strings.Contains(spread, "голос") {
-		return []string{"Истоки", "Текущее состояние", "Совет", "Наставление ангела"}
-	}
-	if strings.Contains(spread, "пирамида") {
-		return []string{"Прошлые влияния", "Текущая ситуация", "Внешние факторы", "Внутренние процессы", "Вызовы", "Вершина (итог)"}
-	}
-	if strings.Contains(spread, "алхимик") {
-		return []string{"Прошлое", "Настоящее", "Будущее", "Ближайшее будущее", "Промежуточное", "Отдаленное"}
-	}
-	if strings.Contains(spread, "подкова") {
-		return []string{"Прошлое", "Настоящее", "Скрытые влияния", "Препятствия", "Окружение", "Совет", "Результат"}
-	}
-	if strings.Contains(spread, "звезда") || strings.Contains(spread, "чакр") {
-		return []string{"Корневая чакра", "Сакральная", "Солнечное сплетение", "Сердечная", "Горловая", "Третий глаз", "Коронная"}
-	}
-	if strings.Contains(spread, "партнерство") {
-		return []string{"Сигнификатор", "Сознание спрашивающего", "Эмоции спрашивающего", "Внешняя сторона (спрашивающий)", "Сознание партнера", "Эмоции партнера", "Внешняя сторона (партнер)"}
-	}
-	if strings.Contains(spread, "кельтский") {
-		return []string{"Ситуация", "Препятствие", "Далекое прошлое", "Недавнее прошлое", "Возможное будущее", "Ближайшее будущее", "Ваше состояние", "Окружение", "Надежды и страхи", "Результат"}
-	}
-	if strings.Contains(spread, "колесо") {
-		return []string{"Январь", "Февраль", "Март", "Апрель", "Май", "Июнь", "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь"}
-	}
+	if strings.Contains(spread, "одна карт") || strings.Contains(spread, "карта дня") { return []string{"Послание дня"} }
+	if strings.Contains(spread, "да или нет") { return []string{"Факторы ДА", "Факторы НЕТ", "Итог"} }
+	if strings.Contains(spread, "три карт") || strings.Contains(spread, "триплет") { return []string{"Прошлое", "Настоящее", "Будущее"} }
+	if strings.Contains(spread, "крест") && !strings.Contains(spread, "кельтский") { return []string{"Центр (суть)", "Слева (препятствия)", "Справа (поддержка)", "Сверху (итог)"} }
+	if strings.Contains(spread, "слепое пятно") { return []string{"Осознаваемое", "Мистер Икс (скрытое)", "Тень", "Слепое пятно"} }
+	if strings.Contains(spread, "пятикарточн") { return []string{"Прошлое", "Настоящее", "Скрытые влияния", "Совет", "Результат"} }
+	if strings.Contains(spread, "ангел") || strings.Contains(spread, "голос") { return []string{"Истоки", "Текущее состояние", "Совет", "Наставление ангела"} }
+	if strings.Contains(spread, "пирамида") { return []string{"Прошлые влияния", "Текущая ситуация", "Внешние факторы", "Внутренние процессы", "Вызовы", "Вершина (итог)"} }
+	if strings.Contains(spread, "алхимик") { return []string{"Прошлое", "Настоящее", "Будущее", "Ближайшее будущее", "Промежуточное", "Отдаленное"} }
+	if strings.Contains(spread, "подкова") { return []string{"Прошлое", "Настоящее", "Скрытые влияния", "Препятствия", "Окружение", "Совет", "Результат"} }
+	if strings.Contains(spread, "звезда") || strings.Contains(spread, "чакр") { return []string{"Корневая чакра", "Сакральная", "Солнечное сплетение", "Сердечная", "Горловая", "Третий глаз", "Коронная"} }
+	if strings.Contains(spread, "партнерство") { return []string{"Сигнификатор", "Сознание спрашивающего", "Эмоции спрашивающего", "Внешняя сторона (спрашивающий)", "Сознание партнера", "Эмоции партнера", "Внешняя сторона (партнер)"} }
+	if strings.Contains(spread, "кельтский") { return []string{"Ситуация", "Препятствие", "Далекое прошлое", "Недавнее прошлое", "Возможное будущее", "Ближайшее будущее", "Ваше состояние", "Окружение", "Надежды и страхи", "Результат"} }
+	if strings.Contains(spread, "колесо") { return []string{"Январь", "Февраль", "Март", "Апрель", "Май", "Июнь", "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь"} }
 	positions := make([]string, cardCount)
-	for i := 0; i < cardCount; i++ {
-		positions[i] = fmt.Sprintf("Позиция %d", i+1)
-	}
+	for i := 0; i < cardCount; i++ { positions[i] = fmt.Sprintf("Позиция %d", i+1) }
 	return positions
 }
 
@@ -240,10 +200,7 @@ func sendSpreadsKeyboard(bot *tgbotapi.BotAPI, chatID int64) {
 	msg := tgbotapi.NewMessage(chatID, "Выберите тип расклада:")
 	var buttons []tgbotapi.InlineKeyboardButton
 	for _, sp := range availableSpreads {
-		buttons = append(buttons, tgbotapi.NewInlineKeyboardButtonData(
-			fmt.Sprintf("%s — %d₽", sp.Name, sp.Price),
-			fmt.Sprintf("select_spread|%s", sp.ID),
-		))
+		buttons = append(buttons, tgbotapi.NewInlineKeyboardButtonData(fmt.Sprintf("%s — %d₽", sp.Name, sp.Price), fmt.Sprintf("select_spread|%s", sp.ID)))
 	}
 	keyboard := tgbotapi.NewInlineKeyboardMarkup()
 	for i := 0; i < len(buttons); i += 2 {
@@ -259,9 +216,7 @@ func sendSpreadsKeyboard(bot *tgbotapi.BotAPI, chatID int64) {
 
 func startShuffleAndReading(bot *tgbotapi.BotAPI, chatID int64) {
 	session := getSession(chatID)
-	if session == nil {
-		return
-	}
+	if session == nil { return }
 
 	session.Deck = generateDeck()
 	session.Step = "shuffling"
@@ -273,56 +228,33 @@ func startShuffleAndReading(bot *tgbotapi.BotAPI, chatID int64) {
 
 	time.Sleep(1200 * time.Millisecond)
 	bot.Request(tgbotapi.NewEditMessageText(chatID, sentMsg.MessageID, "🃏 *Карты выравниваются и заряжаются вашим намерением...*"))
-	
 	time.Sleep(1200 * time.Millisecond)
 	bot.Request(tgbotapi.NewEditMessageText(chatID, sentMsg.MessageID, "✨ *Колода готова к раскрытию тайн.*"))
-	
 	time.Sleep(800 * time.Millisecond)
 
 	msg := tgbotapi.NewMessage(chatID, "Чтобы сделать расклад максимально личным, предложите колоде выбрать момент.\n\nНажмите кнопку ниже, чтобы **срезать колоду**.")
 	msg.ParseMode = "Markdown"
-	msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
-		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("✂️ Срезать колоду", "cut_deck"),
-		),
-	)
+	msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("✂️ Срезать колоду", "cut_deck")))
 	bot.Send(msg)
 }
 
 // --- Основная логика бота ---
-
 func main() {
-	if botToken == "" {
-		log.Fatal("TELEGRAM_BOT_TOKEN is not set")
-	}
+	if botToken == "" { log.Fatal("TELEGRAM_BOT_TOKEN is not set") }
 
-	dialer := &net.Dialer{
-		Timeout:   30 * time.Second,
-		KeepAlive: 30 * time.Second,
-	}
+	dialer := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
 	dialContext := func(ctx context.Context, network, addr string) (net.Conn, error) {
 		return dialer.DialContext(ctx, "tcp", addr)
 	}
 
 	transport := &http.Transport{
-		Proxy:                 http.ProxyFromEnvironment,
-		DialContext:           dialContext,
-		ForceAttemptHTTP2:     true,
-		MaxIdleConns:          100,
-		IdleConnTimeout:       90 * time.Second,
-		TLSHandshakeTimeout:   10 * time.Second,
-		ExpectContinueTimeout: 1 * time.Second,
+		Proxy: http.ProxyFromEnvironment, DialContext: dialContext, ForceAttemptHTTP2: true,
+		MaxIdleConns: 100, IdleConnTimeout: 90 * time.Second, TLSHandshakeTimeout: 10 * time.Second, ExpectContinueTimeout: 1 * time.Second,
 	}
-
-	httpClient := &http.Client{
-		Timeout:   120 * time.Second,
-		Transport: transport,
-	}
+	httpClient := &http.Client{Timeout: 120 * time.Second, Transport: transport}
 
 	bot, err := tgbotapi.NewBotAPIWithClient(botToken, tgbotapi.APIEndpoint, httpClient)
-	if err != nil {
-		log.Fatalf("Failed to create bot: %v", err)
-	}
+	if err != nil { log.Fatalf("Failed to create bot: %v", err) }
 	log.Printf("Authorized on account %s", bot.Self.UserName)
 
 	u := tgbotapi.NewUpdate(0)
@@ -330,13 +262,10 @@ func main() {
 	updates := bot.GetUpdatesChan(u)
 
 	for update := range updates {
-		if update.Message == nil && update.CallbackQuery == nil {
-			continue
-		}
+		if update.Message == nil && update.CallbackQuery == nil { continue }
 
 		var chatID int64
 		var text string
-
 		if update.Message != nil {
 			chatID = update.Message.Chat.ID
 			text = update.Message.Text
@@ -351,7 +280,6 @@ func main() {
 		if (update.Message != nil && update.Message.IsCommand()) || text == "🔮 Новый расклад" {
 			clearSession(chatID)
 			setSession(chatID, &UserSession{Step: "awaiting_question"})
-			
 			msg := tgbotapi.NewMessage(chatID, "🔮 Добро пожаловать в Arcana AI!\n\nЗадайте ваш вопрос картам Таро (например: 'Что меня ждет в новом проекте?'):")
 			msg.ReplyMarkup = tgbotapi.NewRemoveKeyboard(true)
 			bot.Send(msg)
@@ -364,7 +292,6 @@ func main() {
 			session.Question = text
 			session.Step = "awaiting_spread"
 			setSession(chatID, session)
-
 			sendSpreadsKeyboard(bot, chatID)
 			continue
 		}
@@ -404,8 +331,12 @@ func main() {
 				}
 				jsonData, _ := json.Marshal(reqBody)
 				
+				log.Printf("DEBUG TG: Posting to %s with body: %s", backendURL+"/api/create-payment", string(jsonData))
+				
 				client := &http.Client{Timeout: 15 * time.Second}
 				resp, err := client.Post(backendURL+"/api/create-payment", "application/json", bytes.NewBuffer(jsonData))
+				
+				log.Printf("DEBUG TG: Post response: err=%v, resp_status=%v", err, func() int { if resp != nil { return resp.StatusCode }; return 0 }())
 				
 				if err != nil || resp == nil || resp.StatusCode != http.StatusOK {
 					log.Printf("ERROR TG: Failed to create payment for chat %d: err=%v, resp=%v", chatID, err, resp)
@@ -430,17 +361,13 @@ func main() {
 				setSession(chatID, session)
 
 				msg := tgbotapi.NewMessage(chatID, fmt.Sprintf(
-					"Вы выбрали: *%s*\n💰 Стоимость: *%d₽*\n\nНажмите кнопку ниже для оплаты через ЮKassa.\nПосле оплаты нажмите 'Проверить оплату'.",
+					"Вы выбрали: *%s*\n💰 Стоимость: *%d₽*\n\n1. Нажмите кнопку ниже для оплаты через ЮKassa.\n2. После оплаты **закройте открывшееся окно браузера**.\n3. Вернитесь в этот чат и нажмите '🔄 Проверить оплату'.",
 					session.SelectedSpread, session.SpreadPrice,
 				))
 				msg.ParseMode = "Markdown"
 				msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
-					tgbotapi.NewInlineKeyboardRow(
-						tgbotapi.NewInlineKeyboardButtonURL("💳 Оплатить расклад", payResp.ConfirmationURL),
-					),
-					tgbotapi.NewInlineKeyboardRow(
-						tgbotapi.NewInlineKeyboardButtonData("🔄 Проверить оплату", "check_payment"),
-					),
+					tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonURL("💳 Оплатить расклад", payResp.ConfirmationURL)),
+					tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("🔄 Проверить оплату", "check_payment")),
 				)
 				bot.Send(msg)
 			}
@@ -456,7 +383,7 @@ func main() {
 			}
 			if time.Since(session.PaymentCreatedAt) > PaymentTokenLifetime {
 				bot.Request(tgbotapi.NewCallback(update.CallbackQuery.ID, "Токен истёк"))
-				bot.Send(tgbotapi.NewMessage(chatID, " Время на оплату истекло. Начните заново с /start"))
+				bot.Send(tgbotapi.NewMessage(chatID, "⏳ Время на оплату истекло. Начните заново с /start"))
 				clearSession(chatID)
 				continue
 			}
@@ -488,7 +415,6 @@ func main() {
 		// 5. Срез колоды и РАСКЛАД
 		if update.CallbackQuery != nil && text == "cut_deck" {
 			bot.Request(tgbotapi.NewCallback(update.CallbackQuery.ID, "Колода срезана!"))
-
 			selectedSpread := session.SelectedSpread
 			question := session.Question
 			deck := session.Deck
@@ -504,29 +430,18 @@ func main() {
 
 			for i := 0; i < cardCount && i < len(deck); i++ {
 				card := deck[i]
-				selectedCards = append(selectedCards, CardRequest{
-					Name:       card.Name,
-					IsReversed: card.IsReversed,
-				})
-				
+				selectedCards = append(selectedCards, CardRequest{Name: card.Name, IsReversed: card.IsReversed})
 				reversedIcon := ""
-				if card.IsReversed {
-					reversedIcon = " 🔄"
-				}
+				if card.IsReversed { reversedIcon = " 🔄" }
 				cardListText.WriteString(fmt.Sprintf("%d. %s%s\n", i+1, card.Name, reversedIcon))
 			}
 
 			cardsMsg := tgbotapi.NewMessage(chatID, fmt.Sprintf("🃏 *Выпавшие карты:*\n\n%s", cardListText.String()))
 			cardsMsg.ParseMode = "Markdown"
 			bot.Send(cardsMsg)
-
 			bot.Send(tgbotapi.NewMessage(chatID, "⏳ Запрашиваем мудрость ИИ для интерпретации..."))
 
-			reqBody := ReadSpreadRequest{
-				Question: question,
-				Spread:   selectedSpread,
-				Cards:    selectedCards,
-			}
+			reqBody := ReadSpreadRequest{Question: question, Spread: selectedSpread, Cards: selectedCards}
 			jsonData, _ := json.Marshal(reqBody)
 			client := &http.Client{Timeout: 60 * time.Second}
 			resp, err := client.Post(backendURL+"/api/read-spread", "application/json", bytes.NewBuffer(jsonData))
@@ -560,14 +475,10 @@ func main() {
 				isReversed := cardInterp.Card.IsReversed
 				
 				posText := ""
-				if len(result.Cards) > 1 {
-					posText = fmt.Sprintf("📍 *Позиция %d:* %s\n\n", i+1, positions[i])
-				}
+				if len(result.Cards) > 1 { posText = fmt.Sprintf("📍 *Позиция %d:* %s\n\n", i+1, positions[i]) }
 				
 				reversedNote := ""
-				if isReversed {
-					reversedNote = " 🔄 *(Перевёрнутая)*"
-				}
+				if isReversed { reversedNote = " 🔄 *(Перевёрнутая)*" }
 				
 				caption := fmt.Sprintf("%s**%s**%s\n\n%s", posText, cardName, reversedNote, cardInterp.Interpretation)
 				
@@ -580,21 +491,16 @@ func main() {
 				} else {
 					imgBytes, _ := io.ReadAll(imgResp.Body)
 					imgResp.Body.Close()
-					
 					photo := tgbotapi.NewPhoto(chatID, tgbotapi.FileBytes{Name: "card.jpg", Bytes: imgBytes})
 					photo.Caption = caption
 					photo.ParseMode = "Markdown"
-					
 					if _, err := bot.Send(photo); err != nil {
 						textMsg := tgbotapi.NewMessage(chatID, caption)
 						textMsg.ParseMode = "Markdown"
 						bot.Send(textMsg)
 					}
 				}
-				
-				if i < len(result.Cards)-1 {
-					time.Sleep(1500 * time.Millisecond)
-				}
+				if i < len(result.Cards)-1 { time.Sleep(1500 * time.Millisecond) }
 			}
 
 			conclusion := strings.TrimSpace(result.Conclusion)
@@ -611,11 +517,7 @@ func main() {
 		// Fallback
 		if session == nil && update.Message != nil {
 			msg := tgbotapi.NewMessage(chatID, "Пожалуйста, используйте команду /start или кнопку '🔮 Новый расклад' для начала.")
-			msg.ReplyMarkup = tgbotapi.NewReplyKeyboard(
-				tgbotapi.NewKeyboardButtonRow(
-					tgbotapi.NewKeyboardButton(" Новый расклад"),
-				),
-			)
+			msg.ReplyMarkup = tgbotapi.NewReplyKeyboard(tgbotapi.NewKeyboardButtonRow(tgbotapi.NewKeyboardButton("🔮 Новый расклад")))
 			bot.Send(msg)
 		}
 	}
