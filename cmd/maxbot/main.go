@@ -80,7 +80,7 @@ var (
 		DisableKeepAlives:   true,
 	}
 
-	pollingClient = &http.Client{Timeout: 60 * time.Second, Transport: customTransport}
+	pollingClient  = &http.Client{Timeout: 60 * time.Second, Transport: customTransport}
 	insecureClient = &http.Client{Timeout: 30 * time.Second, Transport: customTransport}
 )
 
@@ -342,27 +342,51 @@ func handleUpdate(update map[string]interface{}) {
 			jsonData, _ := json.Marshal(reqBody)
 			
 			log.Printf("DEBUG MAX: Attempting to create payment for user %d. URL: %s", userID, backendURL+"/api/create-payment")
-			log.Printf("DEBUG MAX: Request body: %s", string(jsonData))
 			
 			client := &http.Client{Timeout: 15 * time.Second}
 			resp, err := client.Post(backendURL+"/api/create-payment", "application/json", bytes.NewBuffer(jsonData))
 			
-			log.Printf("DEBUG MAX: Payment creation request finished. err=%v, resp_status=%v", err, func() int { if resp != nil { return resp.StatusCode }; return 0 }())
-			
-			if err != nil || resp == nil || resp.StatusCode != http.StatusOK {
-				log.Printf("ERROR MAX: Failed to create payment for user %d: err=%v, resp=%v", userID, err, resp)
+			if err != nil {
+				log.Printf("ERROR MAX: HTTP request failed for user %d: %v", userID, err)
 				maxSendText(userID, "❌ Не удалось создать платеж. Попробуйте позже.")
 				clearSession(userStr)
 				return
 			}
+			defer resp.Body.Close()
+
+			log.Printf("DEBUG MAX: Payment creation request finished. Status: %d", resp.StatusCode)
 			
+			if resp.StatusCode != http.StatusOK {
+				bodyBytes, _ := io.ReadAll(resp.Body)
+				log.Printf("ERROR MAX: Bad status code %d, body: %s", resp.StatusCode, string(bodyBytes))
+				maxSendText(userID, "❌ Не удалось создать платеж. Попробуйте позже.")
+				clearSession(userStr)
+				return
+			}
+
+			bodyBytes, err := io.ReadAll(resp.Body)
+			if err != nil {
+				log.Printf("ERROR MAX: Failed to read response body for user %d: %v", userID, err)
+				maxSendText(userID, "❌ Ошибка при обработке ответа.")
+				clearSession(userStr)
+				return
+			}
+			log.Printf("DEBUG MAX: Backend response body: %s", string(bodyBytes))
+
 			var payResp struct {
 				PaymentID       string `json:"payment_id"`
 				ConfirmationURL string `json:"confirmation_url"`
 			}
-			if err := json.NewDecoder(resp.Body).Decode(&payResp); err != nil {
+			if err := json.Unmarshal(bodyBytes, &payResp); err != nil {
 				log.Printf("ERROR MAX: Failed to decode payment response for user %d: %v", userID, err)
 				maxSendText(userID, "❌ Ошибка при обработке ответа от платежной системы.")
+				clearSession(userStr)
+				return
+			}
+			
+			if payResp.PaymentID == "" || payResp.ConfirmationURL == "" {
+				log.Printf("ERROR MAX: Missing payment_id or confirmation_url in response for user %d", userID)
+				maxSendText(userID, "❌ Неверный ответ от платежной системы.")
 				clearSession(userStr)
 				return
 			}
@@ -378,7 +402,14 @@ func handleUpdate(update map[string]interface{}) {
 				{{"type": "callback", "text": "🔄 Проверить оплату", "payload": "check_payment"}},
 			}
 
-			maxSendKeyboard(userID, msg, buttons)
+			log.Printf("DEBUG MAX: Attempting to send keyboard to user %d", userID)
+			err = maxSendKeyboard(userID, msg, buttons)
+			if err != nil {
+				log.Printf("ERROR MAX: Failed to send payment prompt to %d: %v", userID, err)
+				maxSendText(userID, "❌ Ошибка при отправке ссылки на оплату.")
+			} else {
+				log.Printf("DEBUG MAX: Successfully sent payment prompt to %d", userID)
+			}
 		}
 		return
 	}
