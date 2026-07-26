@@ -53,10 +53,8 @@ type UserSession struct {
 	Question             string
 	SelectedSpread       string
 	SpreadPrice          int
-	PaymentToken         string
+	PaymentID            string // Реальный ID платежа из бэкенда
 	PaymentCreatedAt     time.Time
-	PaymentClickTime     time.Time
-	PaymentCheckUntil    time.Time
 	PaymentPollingActive bool
 	Deck                 []Card
 }
@@ -69,9 +67,6 @@ var (
 	botToken      = getEnv("TELEGRAM_BOT_TOKEN", "")
 	backendURL    = getEnv("BACKEND_URL", "http://127.0.0.1:18080")
 
-	paymentSimDelay = make(map[int64]time.Duration)
-	paymentSimMutex sync.RWMutex
-
 	cardNameToNumber = map[string]int{
 		"Шут": 0, "Маг": 1, "Верховная Жрица": 2, "Императрица": 3, "Император": 4, "Иерофант": 5, "Влюбленные": 6, "Колесница": 7, "Сила": 8, "Отшельник": 9, "Колесо Фортуны": 10, "Справедливость": 11, "Повешенный": 12, "Смерть": 13, "Умеренность": 14, "Дьявол": 15, "Башня": 16, "Звезда": 17, "Луна": 18, "Солнце": 19, "Суд": 20, "Мир": 21,
 		"Туз Кубков": 22, "Двойка Кубков": 23, "Тройка Кубков": 24, "Четверка Кубков": 25, "Пятерка Кубков": 26, "Шестерка Кубков": 27, "Семерка Кубков": 28, "Восьмерка Кубков": 29, "Девятка Кубков": 30, "Десятка Кубков": 31, "Паж Кубков": 32, "Рыцарь Кубков": 33, "Королева Кубков": 34, "Король Кубков": 35,
@@ -81,11 +76,7 @@ var (
 	}
 )
 
-const (
-	PaymentTokenLifetime = 1 * time.Hour
-	PaymentCheckTimeout  = 10 * time.Minute
-	PaymentPollInterval  = 5 * time.Second
-)
+const PaymentTokenLifetime = 1 * time.Hour
 
 var standardDeck = []string{
 	"Шут", "Маг", "Верховная Жрица", "Императрица", "Император", "Иерофант", "Влюбленные", "Колесница", "Сила", "Отшельник",
@@ -168,23 +159,6 @@ func generatePaymentToken() string {
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
 }
 
-func simulatePaymentDelay(chatID int64) {
-	delay := time.Duration(3+mrand.Intn(3)) * time.Second
-	paymentSimMutex.Lock()
-	paymentSimDelay[chatID] = delay
-	paymentSimMutex.Unlock()
-}
-
-func checkPayment(chatID int64, clickTime time.Time) bool {
-	paymentSimMutex.RLock()
-	delay, exists := paymentSimDelay[chatID]
-	paymentSimMutex.RUnlock()
-	if !exists {
-		delay = 3 * time.Second
-	}
-	return time.Since(clickTime) >= delay
-}
-
 func getCardCount(spread string) int {
 	s := strings.ToLower(spread)
 	if strings.Contains(s, "одна") { return 1 }
@@ -263,42 +237,43 @@ func getSpreadPositions(spreadName string, cardCount int) []string {
 	return positions
 }
 
-// --- Асинхронный поллер оплаты ---
+// --- Проверка статуса оплаты через бэкенд ---
 
-func runPaymentPoller(bot *tgbotapi.BotAPI, chatID int64, token string, clickTime time.Time) {
-	ticker := time.NewTicker(PaymentPollInterval)
-	defer ticker.Stop()
-	timeout := time.After(PaymentCheckTimeout)
-
-	for {
-		select {
-		case <-ticker.C:
-			session := getSession(chatID)
-			if session == nil || session.PaymentToken != token {
-				return
-			}
-			if checkPayment(chatID, clickTime) {
-				bot.Send(tgbotapi.NewMessage(chatID, "✅ Оплата подтверждена! Начинаем ритуал..."))
-				go startShuffleAndReading(bot, chatID)
-				return
-			}
-		case <-timeout:
-			session := getSession(chatID)
-			if session != nil && session.PaymentToken == token {
-				remaining := PaymentTokenLifetime - time.Since(session.PaymentCreatedAt)
-				var msg string
-				if remaining > 0 {
-					msg = fmt.Sprintf("⏳ Оплата не подтверждена за 10 минут. Токен действителен еще %d мин.", int(remaining.Minutes()))
-				} else {
-					msg = "⏳ Токен истёк. Начните заново с /start"
-					clearSession(chatID)
-				}
-				bot.Send(tgbotapi.NewMessage(chatID, msg))
-				session.PaymentPollingActive = false
-				setSession(chatID, session)
-			}
-			return
-		}
+func checkPaymentStatus(bot *tgbotapi.BotAPI, chatID int64, paymentID string) {
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Get(backendURL + "/api/payment-status/" + paymentID)
+	
+	session := getSession(chatID)
+	if session == nil {
+		return
+	}
+	
+	if err != nil || resp == nil || resp.StatusCode != http.StatusOK {
+		log.Printf("ERROR TG: Failed to check payment status for chat %d: err=%v, resp=%v", chatID, err, resp)
+		bot.Send(tgbotapi.NewMessage(chatID, "⚠️ Не удалось проверить статус оплаты. Попробуйте нажать '✅ Я оплатил' еще раз через несколько секунд."))
+		session.PaymentPollingActive = false
+		setSession(chatID, session)
+		return
+	}
+	
+	var statusResp struct {
+		Status string `json:"status"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&statusResp); err != nil {
+		log.Printf("ERROR TG: Failed to decode payment status for chat %d: %v", chatID, err)
+		bot.Send(tgbotapi.NewMessage(chatID, "⚠️ Ошибка при обработке статуса оплаты."))
+		session.PaymentPollingActive = false
+		setSession(chatID, session)
+		return
+	}
+	
+	if statusResp.Status == "succeeded" {
+		bot.Send(tgbotapi.NewMessage(chatID, "✅ Оплата подтверждена! Начинаем ритуал..."))
+		go startShuffleAndReading(bot, chatID)
+	} else {
+		bot.Send(tgbotapi.NewMessage(chatID, "⏳ Оплата ещё не подтверждена. Пожалуйста, завершите оплату и нажмите кнопку снова."))
+		session.PaymentPollingActive = false
+		setSession(chatID, session)
 	}
 }
 
@@ -346,7 +321,7 @@ func main() {
 		KeepAlive: 30 * time.Second,
 	}
 	dialContext := func(ctx context.Context, network, addr string) (net.Conn, error) {
-		return dialer.DialContext(ctx, "tcp", addr) // Используем стандартный tcp (поддерживает и v4, и v6)
+		return dialer.DialContext(ctx, "tcp", addr)
 	}
 
 	transport := &http.Transport{
@@ -436,7 +411,7 @@ func main() {
 			continue
 		}
 
-		// 3. Выбор расклада
+		// 3. Выбор расклада и создание платежа через бэкенд
 		if update.CallbackQuery != nil && strings.HasPrefix(text, "select_spread|") {
 			parts := strings.Split(text, "|")
 			if len(parts) == 2 {
@@ -457,20 +432,56 @@ func main() {
 
 				session.SelectedSpread = selectedSpread.Name
 				session.SpreadPrice = selectedSpread.Price
-				session.PaymentToken = generatePaymentToken()
-				session.PaymentCreatedAt = time.Now()
 				session.Step = "awaiting_payment"
 				setSession(chatID, session)
-				simulatePaymentDelay(chatID)
 
 				bot.Request(tgbotapi.NewCallback(update.CallbackQuery.ID, "Расклад выбран"))
+				bot.Send(tgbotapi.NewMessage(chatID, "⏳ Создаем ссылку на оплату..."))
+
+				// Создаем платеж через бэкенд
+				sessionID := generatePaymentToken()
+				reqBody := map[string]interface{}{
+					"session_id":  sessionID,
+					"spread_name": selectedSpread.Name,
+					"amount":      float64(selectedSpread.Price),
+				}
+				jsonData, _ := json.Marshal(reqBody)
+				
+				client := &http.Client{Timeout: 15 * time.Second}
+				resp, err := client.Post(backendURL+"/api/create-payment", "application/json", bytes.NewBuffer(jsonData))
+				
+				if err != nil || resp == nil || resp.StatusCode != http.StatusOK {
+					log.Printf("ERROR TG: Failed to create payment for chat %d: err=%v, resp=%v", chatID, err, resp)
+					bot.Send(tgbotapi.NewMessage(chatID, "❌ Не удалось создать платеж. Попробуйте позже."))
+					clearSession(chatID)
+					continue
+				}
+				
+				var payResp struct {
+					PaymentID       string `json:"payment_id"`
+					ConfirmationURL string `json:"confirmation_url"`
+				}
+				if err := json.NewDecoder(resp.Body).Decode(&payResp); err != nil {
+					log.Printf("ERROR TG: Failed to decode payment response for chat %d: %v", chatID, err)
+					bot.Send(tgbotapi.NewMessage(chatID, "❌ Ошибка при обработке ответа от платежной системы."))
+					clearSession(chatID)
+					continue
+				}
+				
+				session.PaymentID = payResp.PaymentID
+				session.PaymentCreatedAt = time.Now()
+				setSession(chatID, session)
 
 				msg := tgbotapi.NewMessage(chatID, fmt.Sprintf(
-					"Вы выбрали: *%s*\n💰 Стоимость: *%d₽*\n\n📋 *Номер платежа:* `%s`\n⏰ Токен действителен 1 час\n\nПереведите сумму на карту: `2200 0000 0000 0000`\n\nПосле перевода нажмите кнопку ниже.",
-					session.SelectedSpread, session.SpreadPrice, session.PaymentToken,
+					"Вы выбрали: *%s*\n💰 Стоимость: *%d₽*\n\nДля продолжения ритуала необходимо оплатить расклад.\n\n🔗 [Нажмите здесь для оплаты через ЮKassa](%s)\n\nПосле успешной оплаты нажмите кнопку ниже.",
+					session.SelectedSpread, session.SpreadPrice, payResp.ConfirmationURL,
 				))
 				msg.ParseMode = "Markdown"
+				msg.DisableWebPagePreview = true
 				msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
+					tgbotapi.NewInlineKeyboardRow(
+						tgbotapi.NewInlineKeyboardButtonURL("💳 Оплатить расклад", payResp.ConfirmationURL),
+					),
 					tgbotapi.NewInlineKeyboardRow(
 						tgbotapi.NewInlineKeyboardButtonData("✅ Я оплатил", "check_payment"),
 					),
@@ -480,11 +491,16 @@ func main() {
 			continue
 		}
 
-		// 4. Проверка оплаты
+		// 4. Проверка оплаты через бэкенд
 		if update.CallbackQuery != nil && text == "check_payment" {
+			if session == nil || session.PaymentID == "" {
+				bot.Request(tgbotapi.NewCallback(update.CallbackQuery.ID, "Сессия не найдена"))
+				bot.Send(tgbotapi.NewMessage(chatID, "⏳ Сессия не найдена. Начните заново с /start"))
+				continue
+			}
 			if time.Since(session.PaymentCreatedAt) > PaymentTokenLifetime {
 				bot.Request(tgbotapi.NewCallback(update.CallbackQuery.ID, "Токен истёк"))
-				bot.Send(tgbotapi.NewMessage(chatID, "⏳ Токен истёк. Начните заново с /start"))
+				bot.Send(tgbotapi.NewMessage(chatID, "⏳ Время на оплату истекло. Начните заново с /start"))
 				clearSession(chatID)
 				continue
 			}
@@ -493,13 +509,13 @@ func main() {
 				continue
 			}
 
-			session.PaymentClickTime = time.Now()
 			session.PaymentPollingActive = true
 			setSession(chatID, session)
 
 			bot.Request(tgbotapi.NewCallback(update.CallbackQuery.ID, "Проверяем оплату..."))
-			bot.Send(tgbotapi.NewMessage(chatID, "⏳ Проверяем оплату в системе..."))
-			go runPaymentPoller(bot, chatID, session.PaymentToken, session.PaymentClickTime)
+			bot.Send(tgbotapi.NewMessage(chatID, "⏳ Проверяем статус оплаты в системе..."))
+			
+			go checkPaymentStatus(bot, chatID, session.PaymentID)
 			continue
 		}
 
@@ -598,7 +614,6 @@ func main() {
 				
 				log.Printf("DEBUG TG: Sending card %d/%d (%s) to chat %d", i+1, len(result.Cards), cardName, chatID)
 				
-				// НОВОЕ: Скачиваем картинку сами и отправляем как FileBytes, чтобы обойти блокировку URL со стороны хостинга
 				imgURL := getCardImageURL(cardName)
 				imgResp, err := http.Get(imgURL)
 				if err != nil || imgResp.StatusCode != http.StatusOK {

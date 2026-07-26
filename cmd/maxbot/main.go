@@ -53,10 +53,8 @@ type UserSession struct {
 	Question             string
 	SelectedSpread       string
 	SpreadPrice          int
-	PaymentToken         string
+	PaymentID            string // Реальный ID платежа из бэкенда
 	PaymentCreatedAt     time.Time
-	PaymentClickTime     time.Time
-	PaymentCheckUntil    time.Time
 	PaymentPollingActive bool
 	Deck                 []Card
 }
@@ -69,9 +67,6 @@ var (
 	maxBotToken   = getEnv("MAX_BOT_TOKEN", "")
 	maxAPIBaseURL = getEnv("MAX_API_BASE_URL", "https://platform-api2.max.ru")
 	backendURL    = getEnv("BACKEND_URL", "http://127.0.0.1:18080")
-
-	paymentSimDelay = make(map[string]time.Duration)
-	paymentSimMutex sync.RWMutex
 
 	workingMaxIP = "155.212.204.75"
 
@@ -110,8 +105,6 @@ var (
 
 const (
 	PaymentTokenLifetime = 1 * time.Hour
-	PaymentCheckTimeout  = 10 * time.Minute
-	PaymentPollInterval  = 5 * time.Second
 )
 
 var standardDeck = []string{
@@ -199,23 +192,6 @@ func generateDeck() []Card {
 		deck[i], deck[j] = deck[j], deck[i]
 	}
 	return deck
-}
-
-func simulatePaymentDelay(userID string) {
-	delay := time.Duration(3+mrand.Intn(3)) * time.Second
-	paymentSimMutex.Lock()
-	paymentSimDelay[userID] = delay
-	paymentSimMutex.Unlock()
-}
-
-func checkPayment(userID string, clickTime time.Time) bool {
-	paymentSimMutex.RLock()
-	delay, exists := paymentSimDelay[userID]
-	paymentSimMutex.RUnlock()
-	if !exists {
-		delay = 3 * time.Second
-	}
-	return time.Since(clickTime) >= delay
 }
 
 func getCardCount(spread string) int {
@@ -355,43 +331,43 @@ func maxAPIRequest(method, path string, reqBody interface{}, respBody interface{
 	return nil
 }
 
-// --- Логика бота ---
+// --- Проверка статуса оплаты через бэкенд ---
 
-func runPaymentPoller(userID int64, userStr string, token string, clickTime time.Time) {
-	ticker := time.NewTicker(PaymentPollInterval)
-	defer ticker.Stop()
-	timeout := time.After(PaymentCheckTimeout)
-
-	for {
-		select {
-		case <-ticker.C:
-			session := getSession(userStr)
-			if session == nil || session.PaymentToken != token {
-				return
-			}
-			if checkPayment(userStr, clickTime) {
-				err := maxSendText(userID, "✅ Оплата подтверждена! Начинаем ритуал...")
-				if err != nil { log.Printf("ERROR sending payment confirmed: %v", err) }
-				go startShuffleAndReading(userID, userStr)
-				return
-			}
-		case <-timeout:
-			session := getSession(userStr)
-			if session != nil && session.PaymentToken == token {
-				remaining := PaymentTokenLifetime - time.Since(session.PaymentCreatedAt)
-				var msg string
-				if remaining > 0 {
-					msg = fmt.Sprintf("⏳ Оплата не подтверждена за 10 минут. Токен действителен еще %d мин.", int(remaining.Minutes()))
-				} else {
-					msg = "⏳ Токен истёк. Начните заново с /start"
-					clearSession(userStr)
-				}
-				maxSendText(userID, msg)
-				session.PaymentPollingActive = false
-				setSession(userStr, session)
-			}
-			return
-		}
+func checkPaymentStatus(userID int64, userStr string, paymentID string) {
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Get(backendURL + "/api/payment-status/" + paymentID)
+	
+	session := getSession(userStr)
+	if session == nil {
+		return
+	}
+	
+	if err != nil || resp == nil || resp.StatusCode != http.StatusOK {
+		log.Printf("ERROR MAX: Failed to check payment status for user %d: err=%v, resp=%v", userID, err, resp)
+		maxSendText(userID, "⚠️ Не удалось проверить статус оплаты. Попробуйте нажать '✅ Я оплатил' еще раз через несколько секунд.")
+		session.PaymentPollingActive = false
+		setSession(userStr, session)
+		return
+	}
+	
+	var statusResp struct {
+		Status string `json:"status"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&statusResp); err != nil {
+		log.Printf("ERROR MAX: Failed to decode payment status for user %d: %v", userID, err)
+		maxSendText(userID, "⚠️ Ошибка при обработке статуса оплаты.")
+		session.PaymentPollingActive = false
+		setSession(userStr, session)
+		return
+	}
+	
+	if statusResp.Status == "succeeded" {
+		maxSendText(userID, "✅ Оплата подтверждена! Начинаем ритуал...")
+		go startShuffleAndReading(userID, userStr)
+	} else {
+		maxSendText(userID, "⏳ Оплата ещё не подтверждена. Пожалуйста, завершите оплату и нажмите кнопку снова.")
+		session.PaymentPollingActive = false
+		setSession(userStr, session)
 	}
 }
 
@@ -419,6 +395,8 @@ func startShuffleAndReading(userID int64, userStr string) {
 	}
 	maxSendKeyboard(userID, "✨ Колода готова! Нажмите кнопку ниже, чтобы срезать колоду.", buttons)
 }
+
+// --- Логика бота ---
 
 func handleUpdate(update map[string]interface{}) {
 	var userID int64
@@ -507,6 +485,7 @@ func handleUpdate(update map[string]interface{}) {
 		return
 	}
 
+	// 3. Выбор расклада и создание платежа через бэкенд
 	if isCallback && strings.HasPrefix(callbackData, "select_spread|") {
 		parts := strings.Split(callbackData, "|")
 		if len(parts) == 3 {
@@ -515,16 +494,56 @@ func handleUpdate(update map[string]interface{}) {
 			}
 			session.SelectedSpread = parts[1]
 			fmt.Sscanf(parts[2], "%d", &session.SpreadPrice)
-			session.PaymentToken = uuid.New().String()
-			session.PaymentCreatedAt = time.Now()
 			session.Step = "awaiting_payment"
 			setSession(userStr, session)
-			simulatePaymentDelay(userStr)
 
 			maxAnswerCallback(callbackQueryID, "Расклад выбран")
-			msg := fmt.Sprintf("Вы выбрали: *%s*\n💰 Стоимость: *%d₽*\n\n📋 Номер платежа: %s\n⏰ Токен действителен 1 час\n\nПереведите сумму на карту: 2200 0000 0000 0000\n\nПосле перевода нажмите кнопку ниже.", session.SelectedSpread, session.SpreadPrice, session.PaymentToken)
+			maxSendText(userID, "⏳ Создаем ссылку на оплату...")
+
+			// Создаем платеж через бэкенд
+			sessionID := uuid.New().String()
+			reqBody := map[string]interface{}{
+				"session_id":  sessionID,
+				"spread_name": session.SelectedSpread,
+				"amount":      float64(session.SpreadPrice),
+			}
+			jsonData, _ := json.Marshal(reqBody)
+			
+			client := &http.Client{Timeout: 15 * time.Second}
+			resp, err := client.Post(backendURL+"/api/create-payment", "application/json", bytes.NewBuffer(jsonData))
+			
+			if err != nil || resp == nil || resp.StatusCode != http.StatusOK {
+				log.Printf("ERROR MAX: Failed to create payment for user %d: err=%v, resp=%v", userID, err, resp)
+				maxSendText(userID, "❌ Не удалось создать платеж. Попробуйте позже.")
+				clearSession(userStr)
+				return
+			}
+			
+			var payResp struct {
+				PaymentID       string `json:"payment_id"`
+				ConfirmationURL string `json:"confirmation_url"`
+			}
+			if err := json.NewDecoder(resp.Body).Decode(&payResp); err != nil {
+				log.Printf("ERROR MAX: Failed to decode payment response for user %d: %v", userID, err)
+				maxSendText(userID, "❌ Ошибка при обработке ответа от платежной системы.")
+				clearSession(userStr)
+				return
+			}
+			
+			session.PaymentID = payResp.PaymentID
+			session.PaymentCreatedAt = time.Now()
+			setSession(userStr, session)
+
+			msg := fmt.Sprintf("Вы выбрали: *%s*\n Стоимость: *%d₽*\n\nДля продолжения ритуала необходимо оплатить расклад.\n\n🔗 [Нажмите здесь для оплаты через ЮKassa](%s)\n\nПосле успешной оплаты нажмите кнопку ниже.", session.SelectedSpread, session.SpreadPrice, payResp.ConfirmationURL)
 			
 			buttons := [][]map[string]interface{}{
+				{
+					{
+						"type":    "url",
+						"text":    "💳 Оплатить расклад",
+						"url":     payResp.ConfirmationURL,
+					},
+				},
 				{
 					{
 						"type":    "callback",
@@ -534,7 +553,7 @@ func handleUpdate(update map[string]interface{}) {
 				},
 			}
 
-			err := maxSendKeyboard(userID, msg, buttons)
+			err = maxSendKeyboard(userID, msg, buttons)
 			if err != nil {
 				log.Printf("ERROR sending payment prompt to %d: %v", userID, err)
 			} else {
@@ -544,10 +563,16 @@ func handleUpdate(update map[string]interface{}) {
 		return
 	}
 
+	// 4. Проверка оплаты через бэкенд
 	if isCallback && callbackData == "check_payment" {
-		if session == nil || time.Since(session.PaymentCreatedAt) > PaymentTokenLifetime {
+		if session == nil || session.PaymentID == "" {
+			maxAnswerCallback(callbackQueryID, "Сессия не найдена")
+			maxSendText(userID, "⏳ Сессия не найдена. Начните заново с /start")
+			return
+		}
+		if time.Since(session.PaymentCreatedAt) > PaymentTokenLifetime {
 			maxAnswerCallback(callbackQueryID, "Токен истёк")
-			maxSendText(userID, "⏳ Токен истёк. Начните заново с /start")
+			maxSendText(userID, "⏳ Время на оплату истекло. Начните заново с /start")
 			clearSession(userStr)
 			return
 		}
@@ -556,16 +581,17 @@ func handleUpdate(update map[string]interface{}) {
 			return
 		}
 
-		session.PaymentClickTime = time.Now()
 		session.PaymentPollingActive = true
 		setSession(userStr, session)
 
 		maxAnswerCallback(callbackQueryID, "Проверяем оплату...")
-		maxSendText(userID, "⏳ Проверяем оплату в системе...")
-		go runPaymentPoller(userID, userStr, session.PaymentToken, session.PaymentClickTime)
+		maxSendText(userID, "⏳ Проверяем статус оплаты в системе...")
+		
+		go checkPaymentStatus(userID, userStr, session.PaymentID)
 		return
 	}
 
+	// 5. Срез колоды и ПОЭТАПНЫЙ РАСКЛАД
 	if isCallback && callbackData == "cut_deck" {
 		maxAnswerCallback(callbackQueryID, "Колода срезана!")
 
@@ -591,7 +617,7 @@ func handleUpdate(update map[string]interface{}) {
 			if card.IsReversed {
 				reversedStr = " 🔄 (Перевёрнутая)"
 			}
-			cardTexts = append(cardTexts, fmt.Sprintf("🃏 Позиция %d: %s%s", i+1, card.Name, reversedStr))
+			cardTexts = append(cardTexts, fmt.Sprintf(" Позиция %d: %s%s", i+1, card.Name, reversedStr))
 		}
 
 		maxSendText(userID, "Выпавшие карты:\n\n"+strings.Join(cardTexts, "\n"))
