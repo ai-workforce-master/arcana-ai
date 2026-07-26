@@ -261,6 +261,8 @@ func (s *YooKassaService) updateTaxReport(ctx context.Context, db *sql.DB, paidA
 }
 
 func (s *YooKassaService) GetPaymentStatus(ctx context.Context, db *sql.DB, paymentID string) (*PaymentRecord, error) {
+	log.Printf("DEBUG GetPaymentStatus: Querying for ID = '%s'", paymentID)
+	
 	query := `
 		SELECT id, session_id, yookassa_id, amount, status, spread_name, 
 		       tax_amount, tax_rate, created_at, paid_at, receipt_url
@@ -276,6 +278,8 @@ func (s *YooKassaService) GetPaymentStatus(ctx context.Context, db *sql.DB, paym
 	)
 
 	if err != nil {
+		// ВОТ ЗДЕСЬ МЫ УВИДИМ ТОЧНУЮ ПРИЧИНУ ОШИБКИ
+		log.Printf("ERROR GetPaymentStatus: DB query failed for ID '%s': %v", paymentID, err)
 		return nil, err
 	}
 

@@ -410,6 +410,8 @@ func (h *Handler) PaymentStatus(c *gin.Context) {
 	}
 
 	paymentID := c.Param("id")
+	log.Printf("DEBUG PaymentStatus: Received request for ID = '%s' (length: %d)", paymentID, len(paymentID))
+
 	if paymentID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Payment ID required"})
 		return
@@ -417,6 +419,7 @@ func (h *Handler) PaymentStatus(c *gin.Context) {
 
 	payment, err := h.yooKassa.GetPaymentStatus(c.Request.Context(), h.db, paymentID)
 	if err != nil {
+		log.Printf("ERROR PaymentStatus: Returning 404 due to: %v", err)
 		c.JSON(http.StatusNotFound, gin.H{"error": "Payment not found"})
 		return
 	}
