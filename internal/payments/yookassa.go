@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"arcana-ai/internal/tax"
 )
 
 type YooKassaService struct {
@@ -27,6 +28,8 @@ type YooKassaService struct {
 	webhookSecret string
 	baseURL       string
 	httpClient    *http.Client
+	db            *sql.DB
+	fnsClient     *tax.FNSClient
 }
 
 type PaymentRecord struct {
@@ -40,7 +43,7 @@ type PaymentRecord struct {
 	TaxRate    float64
 	CreatedAt  time.Time
 	PaidAt     *time.Time
-	ReceiptURL sql.NullString // ИСПРАВЛЕНО: корректная обработка NULL из БД
+	ReceiptURL sql.NullString
 }
 
 type WebhookPayload struct {
@@ -55,7 +58,8 @@ type PaymentObject struct {
 	Paid   bool   `json:"paid"`
 }
 
-func NewYooKassaService() (*YooKassaService, error) {
+// NewYooKassaService создаёт сервис платежей с интеграцией ФНС
+func NewYooKassaService(db *sql.DB) (*YooKassaService, error) {
 	shopID := os.Getenv("YOOKASSA_SHOP_ID")
 	secretKey := os.Getenv("YOOKASSA_SECRET_KEY")
 	returnURL := os.Getenv("YOOKASSA_RETURN_URL")
@@ -73,6 +77,14 @@ func NewYooKassaService() (*YooKassaService, error) {
 		failURL = "https://ai-arcana.ru/payment-fail"
 	}
 
+	// Инициализация клиента ФНС
+	fnsClient, err := tax.NewFNSClient(db)
+	if err != nil {
+		log.Printf("WARNING: FNS client initialization failed: %v. Receipts will not be sent to FNS.", err)
+	} else {
+		log.Printf("FNS client initialized successfully")
+	}
+
 	return &YooKassaService{
 		shopID:        shopID,
 		secretKey:     secretKey,
@@ -81,6 +93,8 @@ func NewYooKassaService() (*YooKassaService, error) {
 		webhookSecret: webhookSecret,
 		baseURL:       "https://api.yookassa.ru/v3",
 		httpClient:    &http.Client{Timeout: 15 * time.Second},
+		db:            db,
+		fnsClient:     fnsClient,
 	}, nil
 }
 
@@ -172,6 +186,7 @@ func (s *YooKassaService) CreatePayment(ctx context.Context, db *sql.DB, session
 	return result.Confirmation.ConfirmationURL, paymentID, nil
 }
 
+// HandleWebhook обрабатывает уведомление от ЮKassa и создаёт запись в очереди чеков
 func (s *YooKassaService) HandleWebhook(ctx context.Context, db *sql.DB, body []byte, signature string) error {
 	if s.webhookSecret != "" {
 		if !s.verifySignature(body, signature) {
@@ -200,21 +215,43 @@ func (s *YooKassaService) HandleWebhook(ctx context.Context, db *sql.DB, body []
 
 	if obj.Status == "succeeded" || obj.Paid {
 		now := time.Now()
+		var paymentID, spreadName string
 		var amount, taxAmount float64
 
+		// ИЗМЕНЕНО: Получаем больше полей для создания записи в receipts
 		query := `
 			UPDATE payments 
 			SET status = 'succeeded', paid_at = $1
 			WHERE yookassa_id = $2 AND status = 'pending'
-			RETURNING amount, tax_amount
+			RETURNING id, spread_name, amount, tax_amount
 		`
 
-		err := db.QueryRowContext(ctx, query, now, obj.ID).Scan(&amount, &taxAmount)
+		err := db.QueryRowContext(ctx, query, now, obj.ID).Scan(&paymentID, &spreadName, &amount, &taxAmount)
 		if err != nil {
 			return fmt.Errorf("failed to update payment: %w", err)
 		}
 
-		log.Printf("Payment updated in DB: YooKassa ID=%s, amount=%.2f, tax=%.2f", obj.ID, amount, taxAmount)
+		log.Printf("Payment updated in DB: YooKassa ID=%s, Payment ID=%s, amount=%.2f, tax=%.2f", 
+			obj.ID, paymentID, amount, taxAmount)
+
+		// НОВОЕ: Создаём запись в очереди чеков для отправки в ФНС
+		if s.fnsClient != nil {
+			receiptQuery := `
+				INSERT INTO receipts (payment_id, amount, service_name, operation_time, status)
+				VALUES ($1, $2, $3, $4, 'pending')
+			`
+			_, err := db.ExecContext(ctx, receiptQuery, 
+				paymentID, amount, spreadName, now)
+			
+			if err != nil {
+				log.Printf("WARNING: Failed to create receipt record: %v", err)
+			} else {
+				log.Printf("Receipt queued for FNS: Payment ID=%s, Amount=%.2f, Service=%s", 
+					paymentID, amount, spreadName)
+			}
+		} else {
+			log.Printf("WARNING: FNS client not available, receipt will not be sent")
+		}
 
 		if err := s.updateTaxReport(ctx, db, now, taxAmount); err != nil {
 			log.Printf("Warning: failed to update tax report: %v", err)
@@ -245,7 +282,6 @@ func (s *YooKassaService) updateTaxReport(ctx context.Context, db *sql.DB, paidA
 	`
 	db.ExecContext(ctx, query, monthStart)
 
-	// ИСПРАВЛЕНО: явное приведение типов для PostgreSQL
 	query = `
 		UPDATE tax_reports 
 		SET total_income = total_income + ($1::numeric) / ($2::numeric),
@@ -268,10 +304,11 @@ func (s *YooKassaService) GetPaymentStatus(ctx context.Context, db *sql.DB, paym
 
 	var rec PaymentRecord
 	var paidAt sql.NullTime
+	var receiptURL sql.NullString
 
 	err := db.QueryRowContext(ctx, query, paymentID).Scan(
 		&rec.ID, &rec.SessionID, &rec.YooKassaID, &rec.Amount, &rec.Status,
-		&rec.SpreadName, &rec.TaxAmount, &rec.TaxRate, &rec.CreatedAt, &paidAt, &rec.ReceiptURL,
+		&rec.SpreadName, &rec.TaxAmount, &rec.TaxRate, &rec.CreatedAt, &paidAt, &receiptURL,
 	)
 
 	if err != nil {
@@ -282,6 +319,21 @@ func (s *YooKassaService) GetPaymentStatus(ctx context.Context, db *sql.DB, paym
 	if paidAt.Valid {
 		rec.PaidAt = &paidAt.Time
 	}
+	if receiptURL.Valid {
+		rec.ReceiptURL = receiptURL
+	}
 
 	return &rec, nil
+}
+
+// StartFNSWorker запускает фоновую обработку чеков
+func (s *YooKassaService) StartFNSWorker(ctx context.Context) {
+	if s.fnsClient == nil {
+		log.Println("FNS client is nil, skipping worker start")
+		return
+	}
+	
+	log.Println("FNS: Starting background receipt worker...")
+	worker := tax.NewWorker(s.db, s.fnsClient)
+	go worker.Start(ctx)
 }

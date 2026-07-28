@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"log"
@@ -55,7 +56,7 @@ func NewHandler(cfg *config.Config) (*Handler, error) {
 	}
 
 	// 5. Инициализация ЮKassa
-	yooKassa, err := payments.NewYooKassaService()
+	yooKassa, err := payments.NewYooKassaService(db)
 	if err != nil {
 		log.Printf("Warning: YooKassa not initialized: %v", err)
 	} else {
@@ -438,4 +439,11 @@ func (h *Handler) PaymentStatus(c *gin.Context) {
 		"paid_at":     payment.PaidAt,
 		"receipt_url": receiptURL,
 	})
+}
+
+// StartBackgroundWorkers запускает фоновые задачи (например, воркер ФНС)
+func (h *Handler) StartBackgroundWorkers(ctx context.Context) {
+	if h.yooKassa != nil {
+		h.yooKassa.StartFNSWorker(ctx)
+	}
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"log"
 
 	"arcana-ai/internal/config"
@@ -20,6 +21,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to initialize handlers: %v", err)
 	}
+	
+	// Запускаем фоновые воркеры (отправка чеков в ФНС)
+	h.StartBackgroundWorkers(context.Background())
+	
 	h.RegisterRoutes(router)
 
 	log.Printf("Starting server on :%s", cfg.ServerPort)
