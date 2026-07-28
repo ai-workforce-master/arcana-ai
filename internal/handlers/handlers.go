@@ -3,11 +3,11 @@ package handlers
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
-	"regexp"
 	"strings"
 
 	"arcana-ai/internal/config"
@@ -123,6 +123,7 @@ type ReadSpreadRequest struct {
 type EnrichedCardData struct {
 	rag.CardData
 	IsReversed bool
+	Position   string // Добавлено для передачи позиции в промпт
 }
 
 type CardInterpretation struct {
@@ -134,6 +135,19 @@ type ReadSpreadResponse struct {
 	Intro      string               `json:"intro"`
 	Cards      []CardInterpretation `json:"cards"`
 	Conclusion string               `json:"conclusion"`
+}
+
+// LLMCardInterpretation описывает структуру ответа LLM для одной карты
+type LLMCardInterpretation struct {
+	CardName       string `json:"card_name"`
+	Interpretation string `json:"interpretation"`
+}
+
+// LLMResponse описывает строгую JSON-схему ответа от LLM
+type LLMResponse struct {
+	Intro      string                  `json:"intro"`
+	Cards      []LLMCardInterpretation `json:"cards"`
+	Conclusion string                  `json:"conclusion"`
 }
 
 func (h *Handler) loadSystemPrompt() string {
@@ -169,6 +183,7 @@ func (h *Handler) ReadSpread(c *gin.Context) {
 		enrichedCards = append(enrichedCards, EnrichedCardData{
 			CardData:   card,
 			IsReversed: req.Cards[i].IsReversed,
+			Position:   positions[i],
 		})
 	}
 
@@ -196,62 +211,50 @@ func (h *Handler) ReadSpread(c *gin.Context) {
 
 	llmResponse := resp.Choices[0].Message.Content
 
-	// УЛУЧШЕННЫЙ ПАРСИНГ С РЕГУЛЯРНЫМИ ВЫРАЖЕНИЯМИ
-	paragraphs := strings.Split(llmResponse, "\n\n")
-	var cleanParagraphs []string
-	
-	for _, p := range paragraphs {
-		p = strings.TrimSpace(p)
-		p = regexp.MustCompile(`(?m)^#+\s*`).ReplaceAllString(p, "")
-		p = regexp.MustCompile(`(?m)^\d+\.\s*`).ReplaceAllString(p, "")
-		p = regexp.MustCompile(`(?i)^(вступление|вывод|заключение|итог|интерпретация)[\s:]*`).ReplaceAllString(p, "")
-		p = strings.TrimPrefix(p, "**")
-		p = strings.TrimSuffix(p, "**")
-		
-		p = strings.TrimSpace(p)
-		if p != "" {
-			cleanParagraphs = append(cleanParagraphs, p)
-		}
+	// 1. Очистка ответа от возможных markdown-обёрток (```json ... ```)
+	cleanJSON := strings.TrimSpace(llmResponse)
+	cleanJSON = strings.TrimPrefix(cleanJSON, "```json")
+	cleanJSON = strings.TrimPrefix(cleanJSON, "```")
+	cleanJSON = strings.TrimSuffix(cleanJSON, "```")
+	cleanJSON = strings.TrimSpace(cleanJSON)
+
+	// 2. Парсинг строгого JSON
+	var parsedResp LLMResponse
+	if err := json.Unmarshal([]byte(cleanJSON), &parsedResp); err != nil {
+		log.Printf("JSON parse error: %v, raw response: %s", err, llmResponse)
+		// Fallback: если LLM всё же сломал формат, возвращаем сырой текст, чтобы не ломать фронтенд
+		c.JSON(http.StatusOK, ReadSpreadResponse{
+			Intro:      "Извините, произошла ошибка форматирования ответа LLM.",
+			Cards:      []CardInterpretation{},
+			Conclusion: llmResponse,
+		})
+		return
 	}
 
-	intro := ""
-	conclusion := ""
-	if len(cleanParagraphs) > 0 {
-		intro = cleanParagraphs[0]
-	}
-	if len(cleanParagraphs) > 1 {
-		conclusion = cleanParagraphs[len(cleanParagraphs)-1]
-	}
-
-	middleParagraphs := []string{}
-	if len(cleanParagraphs) > 2 {
-		middleParagraphs = cleanParagraphs[1 : len(cleanParagraphs)-1]
-	} else if len(cleanParagraphs) == 2 {
-		middleParagraphs = cleanParagraphs[1:]
-	}
-
+	// 3. Надёжное сопоставление карт по имени (а не по порядку абзацев!)
 	var responseCards []CardInterpretation
-	for i, card := range req.Cards {
-		interpretation := ""
-		if i < len(middleParagraphs) {
-			interpretation = middleParagraphs[i]
-		} else {
-			interpretation = "Энергия этой карты тесно переплетена с общим смыслом расклада и дополняет его."
+	for _, reqCard := range req.Cards {
+		interpretation := "Энергия этой карты тесно переплетена с общим смыслом расклада и дополняет его."
+		
+		// Ищем толкование именно для этой карты (нечувствительно к регистру и пробелам)
+		for _, llmCard := range parsedResp.Cards {
+			if strings.EqualFold(strings.TrimSpace(llmCard.CardName), strings.TrimSpace(reqCard.Name)) {
+				interpretation = llmCard.Interpretation
+				break
+			}
 		}
 		
 		responseCards = append(responseCards, CardInterpretation{
-			Card: CardRequest{
-				Name:       card.Name,
-				IsReversed: card.IsReversed,
-			},
+			Card:           reqCard,
 			Interpretation: interpretation,
 		})
 	}
 
+	// 4. Отдаём идеальный, структурированный ответ
 	c.JSON(http.StatusOK, ReadSpreadResponse{
-		Intro:      intro,
+		Intro:      parsedResp.Intro,
 		Cards:      responseCards,
-		Conclusion: conclusion,
+		Conclusion: parsedResp.Conclusion,
 	})
 }
 
@@ -308,7 +311,7 @@ func getSpreadPositions(spreadName string, cardCount int) []string {
 
 func buildLLMPrompt(question, spreadName string, cards []EnrichedCardData) string {
 	var sb strings.Builder
-	sb.WriteString("Проинтерпретируй расклад на основе следующих данных.\n\n")
+	sb.WriteString("Проинтерпретируй расклад Таро на основе следующих данных.\n\n")
 	sb.WriteString(fmt.Sprintf("**Вопрос кверента:** %s\n", question))
 	if spreadName != "" {
 		sb.WriteString(fmt.Sprintf("**Используемый расклад:** %s\n\n", spreadName))
@@ -329,21 +332,25 @@ func buildLLMPrompt(question, spreadName string, cards []EnrichedCardData) strin
 			}
 		}
 
-		sb.WriteString(fmt.Sprintf("- %s: «%s» (%s)\n", card.Position, card.Name, orientationText))
-		sb.WriteString(fmt.Sprintf("  *Значение:* %s\n", meaningText))
-		sb.WriteString(fmt.Sprintf("  *Совет карты:* %s\n", card.Advice))
+		sb.WriteString(fmt.Sprintf("- Позиция: %s\n", card.Position))
+		sb.WriteString(fmt.Sprintf("  Карта: %s (%s)\n", card.Name, orientationText))
+		sb.WriteString(fmt.Sprintf("  Значение: %s\n", meaningText))
+		sb.WriteString(fmt.Sprintf("  Совет карты: %s\n\n", card.Advice))
 	}
 
-	sb.WriteString("\n**Формат ответа (СТРОГО СОБЛЮДАЙ):**\n")
-	sb.WriteString("Раздели ответ на части ДВОЙНЫМ переносом строки (\\n\\n).\n")
-	sb.WriteString("НЕ используй заголовки (##), жирный шрифт (**) или нумерацию (1., 2.) для названий частей. Пиши просто текстом.\n")
-	sb.WriteString("Первый абзац: Вступление (1-2 абзаца), кратко опиши общую энергетику расклада.\n")
-	for _, card := range cards {
-		sb.WriteString(fmt.Sprintf("Затем абзац(ы): Интерпретация для карты '%s' в позиции '%s' (1-2 абзаца, подробно).\n", card.Name, card.Position))
-	}
-	sb.WriteString("Последний абзац: Итоговый вывод (ОБЯЗАТЕЛЬНО 2-3 развёрнутых абзаца): обобщи все карты, дай глубокий анализ, конкретные рекомендации и поддержку кверенту.\n")
-	sb.WriteString("Не используй маркированные списки внутри этих абзацев, только сплошной текст.")
-
+	sb.WriteString("**ИНСТРУКЦИЯ ПО ФОРМАТУ ОТВЕТА (СТРОГО СОБЛЮДАЙ):**\n")
+	sb.WriteString("Ты должен ответить ТОЛЬКО валидным JSON-объектом. Никакого текста до или после JSON. Никаких markdown-обёрток (например, ```json).\n")
+	sb.WriteString("Используй строго следующую схему JSON:\n")
+	sb.WriteString(`{
+  "intro": "Краткое введение в энергию расклада и суть вопроса (2-5 предложения).",
+  "cards": [
+    {
+      "card_name": "Точное название карты из списка выше",
+      "interpretation": "Толкование этой карты в её конкретной позиции с учётом прямого/перевёрнутого положения и влияния других карт расклада (3-7 предложений)."
+    }
+  ],
+  "conclusion": "Итоговый совет, резюме или практический следующий шаг для кверента (2-5 предложений)."
+}`)
 	return sb.String()
 }
 
